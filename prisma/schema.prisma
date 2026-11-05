@@ -1,0 +1,287 @@
+// PARTART data model.
+// Development uses SQLite. For PostgreSQL, change provider to "postgresql" — no SQLite-only features are used.
+// Nested structures (primitive parameters, validation detail, step content) are stored as JSON text so the
+// schema stays identical across providers.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String    @id @default(cuid())
+  email     String?   @unique
+  name      String
+  createdAt DateTime  @default(now())
+  projects  Project[]
+}
+
+model Project {
+  id              String   @id @default(cuid())
+  userId          String?
+  user            User?    @relation(fields: [userId], references: [id])
+  name            String
+  description     String   @default("")
+  intent          String   @default("")
+  category        String   @default("other")
+  // Size the user wants the finished object to be, along its largest dimension (mm).
+  targetSizeMm    Float?
+  // Real-world size of the reference object if known (mm, largest dimension).
+  realSizeMm      Float?
+  region          String   @default("SE")
+  status          String   @default("new") // new | analyzing | analyzed | designing | building | ready | failed
+  activeDesignId  String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  images         ReferenceImage[]
+  analyses       ObjectAnalysis[]
+  reconstructions ReconstructedModel[]
+  components     Component[]
+  relationships  ComponentRelationship[]
+  designs        ManufacturingDesign[]
+  jobs           Job[]
+  builds         BuildKit[]
+  tutorials      Tutorial[]
+}
+
+model ReferenceImage {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  storagePath String
+  fileName    String
+  mime        String
+  view        String   @default("unspecified") // front | side | back | top | detail | unspecified
+  note        String   @default("")
+  createdAt   DateTime @default(now())
+}
+
+model ObjectAnalysis {
+  id             String   @id @default(cuid())
+  projectId      String
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  version        Int
+  provider       String   // claude-vision | template
+  model          String?
+  category       String
+  summary        String
+  // JSON: { observed: string[], inferred: string[], assumptions: string[], uncertainties: [...], requestedViews: [...], symmetry, repeated }
+  findingsJson   String
+  rawJson        String   @default("{}")
+  createdAt      DateTime @default(now())
+}
+
+model ReconstructedModel {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  provider    String   // parametric-proxy | mesh-import
+  kind        String   // proxy | imported
+  storagePath String?
+  format      String?
+  notes       String   @default("")
+  createdAt   DateTime @default(now())
+}
+
+model Component {
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  // Persistent, human-readable part ID used everywhere: viewer, file names, layers, shopping list, assembly.
+  partId       String
+  name         String
+  role         String   @default("structure") // structure | shell | roof | opening | detail | joint | wheel | limb | head | base | accessory | imported
+  parentId     String?
+  // JSON: { type: "box"|"gable"|"cylinder"|"ellipsoid"|"wedge"|"cone"|"mesh", ...params in mm }
+  primitiveJson String
+  // JSON [x,y,z] mm in project space (Z up, origin at base centre). Primitive is centred on XY, bottom on z=0 locally.
+  positionJson String   @default("[0,0,0]")
+  // JSON [rx,ry,rz] degrees
+  rotationJson String   @default("[0,0,0]")
+  colorHex     String   @default("#d8c7a8")
+  provenance   String   @default("inferred") // observed | inferred | user | assumed | template | imported
+  confidence   Float    @default(0.5)
+  notes        String   @default("")
+  sortOrder    Int      @default(0)
+  hidden       Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([projectId, partId])
+}
+
+model ComponentRelationship {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fromPart  String  // partId
+  toPart    String  // partId
+  type      String  // sits_on | attached_to | inserts_into | mirrors | hinged_to
+  notes     String  @default("")
+}
+
+model ManufacturingDesign {
+  id           String   @id @default(cuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name         String
+  mode         String   // realistic | woodwork | acrylic | stylized | mixed | papercraft | cardboard | sculptural | flatpack | collectible
+  // JSON: { realism, detail, complexity, budget, difficulty, targetSizeMm, palette, finish }
+  controlsJson String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  assignments  ComponentAssignment[]
+}
+
+model ComponentAssignment {
+  id          String              @id @default(cuid())
+  designId    String
+  design      ManufacturingDesign @relation(fields: [designId], references: [id], onDelete: Cascade)
+  partId      String
+  method      String // print | laser | paper | cardboard | manual | omit
+  materialKey String
+  colorHex    String?
+  userLocked  Boolean @default(false) // true when the user overrode this component explicitly
+
+  @@unique([designId, partId])
+}
+
+model Material {
+  id           String  @id @default(cuid())
+  key          String  @unique
+  name         String
+  kind         String  // sheet | filament | resin | fabric | clay | paper | adhesive | hardware | finish
+  thicknessMm  Float?
+  densityGcm3  Float?
+  colorHex     String?
+  notes        String  @default("")
+}
+
+model PrinterProfile {
+  id            String  @id @default(cuid())
+  name          String
+  buildX        Float
+  buildY        Float
+  buildZ        Float
+  nozzleMm      Float   @default(0.4)
+  layerHeightMm Float   @default(0.2)
+  filament      String  @default("PLA")
+  walls         Int     @default(3)
+  infillPct     Int     @default(15)
+  supports      String  @default("tree") // none | normal | tree
+  adhesion      String  @default("none") // none | brim | raft
+  clearanceMm   Float   @default(0.2)
+  isPreset      Boolean @default(false)
+}
+
+model LaserProfile {
+  id          String  @id @default(cuid())
+  name        String
+  workX       Float
+  workY       Float
+  kerfMm      Float   @default(0.15)
+  software    String  @default("LightBurn")
+  isPreset    Boolean @default(false)
+}
+
+model Job {
+  id          String    @id @default(cuid())
+  projectId   String
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  type        String    // analyze | build-kit | tutorial
+  status      String    @default("queued") // queued | running | done | failed
+  progress    Float     @default(0)
+  message     String    @default("")
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(2)
+  error       String?
+  payloadJson String    @default("{}")
+  resultJson  String?
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+}
+
+model BuildKit {
+  id                 String   @id @default(cuid())
+  projectId          String
+  project            Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  designId           String
+  status             String   @default("pending") // pending | done | failed
+  readiness          String?  // ready | ready_with_warnings | needs_adjustment | not_manufacturable
+  printerProfileJson String
+  laserProfileJson   String
+  // JSON snapshot of the design + components the kit was generated from (traceability)
+  snapshotJson       String   @default("{}")
+  zipPath            String?
+  createdAt          DateTime @default(now())
+
+  files      GeneratedFile[]
+  validation ValidationReport?
+  shopping   ShoppingList?
+  steps      AssemblyStep[]
+}
+
+model GeneratedFile {
+  id          String   @id @default(cuid())
+  buildId     String
+  build       BuildKit @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  kitPath     String   // path inside the kit, e.g. 03_3D_PRINT/roof/C-ROOF-01_roof.stl
+  storagePath String
+  format      String
+  purpose     String
+  partIds     String   @default("[]") // JSON array of partIds this file is traceable to
+  bytes       Int
+  sha256      String
+  createdAt   DateTime @default(now())
+}
+
+model ValidationReport {
+  id         String   @id @default(cuid())
+  buildId    String   @unique
+  build      BuildKit @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  status     String
+  reportJson String
+  createdAt  DateTime @default(now())
+}
+
+model Supplier {
+  id          String   @id @default(cuid())
+  region      String
+  name        String
+  url         String
+  categories  String   // JSON array
+  verifiedAt  DateTime?
+  notes       String   @default("")
+}
+
+model ShoppingList {
+  id        String   @id @default(cuid())
+  buildId   String   @unique
+  build     BuildKit @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  listJson  String
+  createdAt DateTime @default(now())
+}
+
+model AssemblyStep {
+  id          String   @id @default(cuid())
+  buildId     String
+  build       BuildKit @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  index       Int
+  title       String
+  contentJson String
+}
+
+model Tutorial {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  software    String   // blender | nomad
+  contentJson String
+  createdAt   DateTime @default(now())
+}
