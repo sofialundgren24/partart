@@ -167,7 +167,9 @@ function generic(): T[] {
   ];
 }
 
-const VICTORIAN = /victoria|viktoria|queen anne|villa|turret|torn|tower|gingerbread|snickargl|dollhouse|dockskåp/i;
+// Only explicit signs of a turreted/Victorian house. Generic words ("villa", "dollhouse") must NOT trigger it —
+// "villa" is just "house" in Swedish.
+const VICTORIAN = /victoria|viktoria|queen anne|turret|\btorn|\btower|gingerbread|snickargl/i;
 
 export function templateFor(category: string, text = ""): { components: T[]; label: string } {
   switch (category) {
