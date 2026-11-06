@@ -7,17 +7,20 @@ import type { ManifoldToplevel } from "manifold-3d";
 import { bboxOf, bboxSize, componentSolid, getManifold, placeSolid, toMeshData, type Manifold } from "../geometry/kernel";
 import { checkMesh } from "../geometry/meshCheck";
 import { isDoor, primitiveSize, type ComponentSpec, type MeshData, type Vec3 } from "../geometry/types";
-import { material } from "../materials/catalog";
+import { extrudeXZ, openingSection } from "../geometry/profiles";
+import { MATERIALS, material } from "../materials/catalog";
 import { write3mf, writeBinaryStl, writeGlb, writeObj, readStl, type GlbNode } from "../export/mesh-formats";
 import { layoutsPdf, sheetDxf, sheetSvg } from "../export/vector-formats";
-import { assemblyGuidePdf, textPdf, type PartRow } from "../export/pdf-docs";
+import { assemblyGuidePdf, catalogPdf, textPdf, type CatalogGroup, type CatalogPart, type PartRow } from "../export/pdf-docs";
+import { nearestPaint, type Paint } from "../materials/paints";
+import type { ShoppingItem } from "../materials/shopping";
 import { explodeOffsets, type RenderItem } from "../export/render";
 import { buildShoppingList, type ShoppingList } from "../materials/shopping";
 import { blenderScript, buildCourse, courseMarkdown } from "../learn/tutorials";
 import { assemblySequence, type AssemblyStepDef } from "./assembly";
 import { nest, type SheetLayout } from "./nest";
-import { panelSolid, panelsFor, type Panel } from "./panels";
-import { buildPrintParts, FRAME, type PrintPart } from "./print";
+import { applyCladding, panelSolid, panelsFor, trimPanels, type Panel } from "./panels";
+import { buildPrintParts, FRAME, printWallMm, type PrintPart } from "./print";
 import { flatten, resolveTree, type Assignment, type LaserProfile, type PrinterProfile, type ResolvedPart } from "./resolve";
 
 export interface KitInput {
@@ -61,6 +64,7 @@ export interface KitResult {
   manualParts: { partId: string; name: string; material: string; size: string; instructions: string }[];
   partsList: PartRow[];
   zip: Buffer;
+  catalog: { groups: CatalogGroup[]; parts: Omit<CatalogPart, "render">[] };
   stats: { components: number; printedFiles: number; sheetParts: number; sheets: number; filamentG: number };
 }
 
@@ -89,10 +93,10 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
     const holes: Manifold[] = [];
     const parent = byId.get(partId);
     for (const o of openingChildren(partId)) {
-      const p = o.comp.primitive as { w: number; h: number };
+      const p = o.comp.primitive as { w: number; h: number; arch?: string };
       const ps = primitiveSize(parent!.comp.primitive);
       const depth = Math.max(8, Math.min(20, 0.5 * Math.min(ps[0], ps[1]))); // through one wall, never the opposite one
-      holes.push(placeSolid(wasm.Manifold.cube([p.w, depth, p.h], true).translate([0, 0, p.h / 2]), o.comp.rotation, o.comp.position));
+      holes.push(placeSolid(extrudeXZ(wasm, openingSection(wasm, p.w, p.h, p.arch), depth), o.comp.rotation, o.comp.position));
     }
     // Wheels get an axle bore: the wheel's parent axle plus radial clearance.
     if (parent && parent.comp.role === "wheel") {
@@ -107,9 +111,48 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
     return holes;
   };
 
+  // ---------- precedence trimming ----------
+  // Where two parts overlap (a bay against the house, a cross gable running into the main roof, a chimney through
+  // the roof), the ancestor — or, between unrelated parts, the earlier one — keeps its shape and the other is
+  // trimmed to it. This gives sheet parts their true outline and printed parts their true contact faces.
+  const order = new Map(input.components.map((c, i) => [c.partId, i]));
+  const ancestors = (id: string) => {
+    const out = new Set<string>();
+    let cur = byId.get(id)?.comp.parentPartId ?? null;
+    while (cur && !out.has(cur)) { out.add(cur); cur = byId.get(cur)?.comp.parentPartId ?? null; }
+    return out;
+  };
+  const VOLUME_ROLES = new Set(["base", "structure", "shell", "roof", "chimney"]);
+  const VOLUME_TYPES = new Set(["box", "gable", "hip", "wedge", "ngon", "pyramid", "cylinder"]);
+  const volumeSolid = new Map<string, Manifold>();
+  const volOf = (p: ResolvedPart) => {
+    if (!volumeSolid.has(p.comp.partId)) volumeSolid.set(p.comp.partId, componentSolid(wasm, p.comp, input.meshLoader, 32));
+    return volumeSolid.get(p.comp.partId)!;
+  };
+  const dominantsFor = (partId: string): Manifold[] => {
+    const me = byId.get(partId);
+    if (!me || me.comp.role === "opening") return [];
+    const anc = ancestors(partId);
+    const mySolid = volOf(me);
+    const mb = mySolid.boundingBox();
+    const out: Manifold[] = [];
+    for (const other of live) {
+      if (other === me || !VOLUME_ROLES.has(other.comp.role) || !VOLUME_TYPES.has(other.comp.primitive.type)) continue;
+      if (ancestors(other.comp.partId).has(partId)) continue; // my descendants never trim me
+      const wins = anc.has(other.comp.partId) || (order.get(other.comp.partId)! < order.get(partId)!);
+      if (!wins) continue;
+      const os = volOf(other);
+      const ob = os.boundingBox();
+      if ([0, 1, 2].some((k) => mb.max[k] <= ob.min[k] + 0.01 || ob.max[k] <= mb.min[k] + 0.01)) continue;
+      out.push(os);
+    }
+    return out;
+  };
+
   // ---------- 3D printing ----------
   const printParts = live.filter((p) => p.method === "print");
-  const { prints } = buildPrintParts({ wasm, printer: input.printer, meshLoader: input.meshLoader, openingsFor }, printParts);
+  const { prints, warnings: printWarnings } = buildPrintParts({ wasm, printer: input.printer, meshLoader: input.meshLoader, openingsFor, dominantsFor, parentThickness: (id) => { const par = byId.get(id); return par && par.method !== "print" ? material(par.materialKey).thicknessMm ?? 3 : printWallMm(input.printer); } }, printParts);
+  for (const w of printWarnings) checks.push({ area: "print", level: "warn", partIds: [], message: w });
   const printCards: PrintCard[] = [];
   const printFolder = (p: PrintPart) => (p.kind === "pins" ? "connectors" : byId.get(p.partIds[0])?.comp.role ?? "parts");
   for (const p of prints) {
@@ -144,12 +187,21 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
 
   // ---------- sheet parts ----------
   const sheetParts = live.filter((p) => p.method === "laser" || p.method === "paper" || p.method === "cardboard");
-  const panelCtx = { wasm, openingsOf: (id: string) => openingChildren(id), fingers: input.difficulty !== "easy" };
+  const panelCtx = {
+    wasm, openingsOf: (id: string) => openingChildren(id), fingers: input.difficulty !== "easy",
+    frameMaterial: live.some((p) => p.method === "laser" && material(p.materialKey).key.startsWith("plywood")) ? { key: "plywood-3", t: 3 } : live.some((p) => p.method === "laser" && p.materialKey === "mdf-3") ? { key: "mdf-3", t: 3 } : null,
+    parentThickness: (id: string) => { const par = byId.get(id); return par && par.method !== "print" ? material(par.materialKey).thicknessMm ?? 3 : printWallMm(input.printer); },
+  };
   const panels: Panel[] = [];
   const dowelStacks: { partId: string; heightMm: number }[] = [];
   const panelNotes = new Map<string, string[]>();
   for (const sp of sheetParts) {
     const r = panelsFor(panelCtx, sp);
+    // Openings and overlapping volumes are cut in 3D, then cladding is engraved on the final outline.
+    const cutters = [...openingsFor(sp.comp.partId), ...dominantsFor(sp.comp.partId)];
+    const tr = trimPanels(wasm, r.panels, sp.comp, cutters);
+    r.panels = tr.panels.map(applyCladding);
+    if (tr.trimmed || tr.removed) r.notes.push(`${tr.trimmed} panel(s) shaped to meet neighbouring parts or openings${tr.removed ? `, ${tr.removed} hidden panel(s) dropped` : ""}.`);
     panels.push(...r.panels);
     panelNotes.set(sp.comp.partId, r.notes);
     r.warnings.forEach((w) => checks.push({ area: "laser", level: "warn", partIds: [sp.comp.partId], message: w }));
@@ -196,24 +248,28 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
   // ---------- assembled manufacturing geometry (shared coordinate system) ----------
   const worldMeshes = new Map<string, MeshData>();
   const lowPoly = new Map<string, MeshData>();
-  for (const p of prints) if (p.worldMesh.indices.length) worldMeshes.set(p.partIds[0], p.worldMesh);
+  const worldSolids = new Map<string, Manifold>();
+  for (const p of prints) if (p.worldMesh.indices.length) { worldMeshes.set(p.partIds[0], p.worldMesh); if (p.worldSolid) worldSolids.set(p.partIds[0], p.worldSolid); }
   for (const sp of sheetParts) {
     const solids = panels.filter((x) => x.partId === sp.comp.partId).map((x) => panelSolid(wasm, x, sp.comp)).filter((x): x is Manifold => !!x);
-    if (solids.length) worldMeshes.set(sp.comp.partId, toMeshData(wasm.Manifold.compose(solids)));
+    if (solids.length) { const comp = wasm.Manifold.compose(solids); worldMeshes.set(sp.comp.partId, toMeshData(comp)); worldSolids.set(sp.comp.partId, comp); }
     else worldMeshes.set(sp.comp.partId, toMeshData(componentSolid(wasm, sp.comp, input.meshLoader, 24)));
   }
   const manualParts: KitResult["manualParts"] = [];
   for (const mp of live.filter((p) => p.method === "manual")) {
-    worldMeshes.set(mp.comp.partId, toMeshData(componentSolid(wasm, mp.comp, input.meshLoader, 32)));
+    { const ms = componentSolid(wasm, mp.comp, input.meshLoader, 32); worldMeshes.set(mp.comp.partId, toMeshData(ms)); worldSolids.set(mp.comp.partId, ms); }
     manualParts.push({ partId: mp.comp.partId, name: mp.comp.name, material: material(mp.materialKey).name, size: primitiveSize(mp.comp.primitive).map((x) => x.toFixed(1)).join(" × ") + " mm", instructions: `Make ${mp.comp.name} by hand in ${material(mp.materialKey).name} to ${primitiveSize(mp.comp.primitive).map((x) => x.toFixed(0)).join(" × ")} mm. Print the reference-proxy STL in 02_3D_MODELS if you want a size gauge.` });
     files.push(file(`02_3D_MODELS/size_gauges/${mp.comp.partId}_gauge.stl`, writeBinaryStl(toMeshData(componentSolid(wasm, { ...mp.comp, position: [0, 0, 0], rotation: [0, 0, 0] }, input.meshLoader, 48))), "stl", `Size gauge for the hand-made ${mp.comp.name}`, [mp.comp.partId]));
   }
   for (const p of live) lowPoly.set(p.comp.partId, p.comp.primitive.type === "mesh" ? (worldMeshes.get(p.comp.partId) ?? toMeshData(componentSolid(wasm, p.comp, input.meshLoader))) : toMeshData(componentSolid(wasm, p.comp, input.meshLoader, 18)));
 
   // ---------- dimensional consistency & connections ----------
-  dimensionChecks(wasm, live, worldMeshes, input, checks);
-  connectionChecks(live, byId, input, checks, panels);
-  overlapChecks(wasm, live, input, checks);
+  dimensionChecks(wasm, live, worldMeshes, input, checks, dominantsFor);
+  // Support check needs every part in place: folded paper nets have no placed geometry, so use their modelled volume.
+  const supportSolids = new Map(worldSolids);
+  for (const p of live) if (!supportSolids.has(p.comp.partId) && p.comp.role !== "opening") supportSolids.set(p.comp.partId, componentSolid(wasm, p.comp, input.meshLoader, 16));
+  connectionChecks(live, byId, input, checks, panels, supportSolids);
+  overlapChecks(live, worldSolids, ancestors, checks);
 
   // ---------- assembly ----------
   const steps = assemblySequence(roots.filter((r) => r.method !== "omit"));
@@ -253,7 +309,23 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
     partId: p.comp.partId, name: p.comp.name, method: p.method, material: material(p.materialKey).name,
     files: filesByPart.get(p.comp.partId) ?? [], size: primitiveSize(p.comp.primitive).map((x) => x.toFixed(1)).join(" × ") + " mm",
   }));
-  const shopping = buildShoppingList({ region: input.region, layouts, prints, parts: live, steps, dowelStacks, finish: input.finish });
+  // Finishes: paint every part whose colour differs from its raw material (natural wood/clear stays unpainted).
+  const finishes = new Map<string, { paint: Paint | null; finish: string }>();
+  for (const p of live) {
+    const m = material(p.materialKey);
+    const col = (p.colorHex || m.colorHex).toLowerCase();
+    const framed = p.comp.role === "opening" && panels.some((x) => x.partId === p.comp.partId && x.label.endsWith("— frame"));
+    if (m.transparent && framed) finishes.set(p.comp.partId, { paint: nearestPaint("#efe6d2"), finish: "clear pane, painted frame" });
+    else if (m.transparent) finishes.set(p.comp.partId, { paint: null, finish: "clear — no paint" });
+    else if (col === m.colorHex.toLowerCase() && p.method !== "print") finishes.set(p.comp.partId, { paint: null, finish: input.finish === "oiled" ? "natural, oiled" : "natural" });
+    else finishes.set(p.comp.partId, { paint: nearestPaint(col), finish: "painted" });
+  }
+  const glazed = live.filter((p) => p.comp.role === "opening" && !isDoor(p.comp)).map((p) => p.comp.partId);
+  const shopping = buildShoppingList({
+    region: input.region, layouts, prints, parts: live, steps, dowelStacks, finish: input.finish,
+    paints: [...finishes].filter(([, f]) => f.paint).map(([partId, f]) => ({ partId, paint: f.paint! })),
+    glazedOpenings: glazed, ornaments: live.filter((p) => p.comp.role === "ornament").map((p) => p.comp.partId),
+  });
   const renderItems: RenderItem[] = live.map((p) => ({ id: p.comp.partId, mesh: lowPoly.get(p.comp.partId)!, color: colorOf(p) }));
   const rOff = explodeOffsets(renderItems.map((r) => ({ id: r.id, mesh: r.mesh })), 0.7);
   const guide = await assemblyGuidePdf({
@@ -270,6 +342,34 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
   });
   files.push(file("06_ASSEMBLY/assembly_guide.pdf", guide, "pdf", "Step-by-step illustrated assembly guide", live.map((p) => p.comp.partId)));
   steps.forEach((s) => files.push(file(`06_ASSEMBLY/assembly_steps/step_${String(s.index).padStart(2, "0")}.json`, JSON.stringify(s, null, 2), "json", `Assembly step ${s.index}`, s.partIds)));
+
+  // ---------- build catalogue ----------
+  const glueFor = new Map<string, string[]>();
+  for (const st of steps) for (const id of st.partIds) glueFor.set(id, st.adhesives);
+  const notesFor = new Map<string, string[]>();
+  for (const c of printCards) for (const id of c.partIds) notesFor.set(id, [...(notesFor.get(id) ?? []), ...c.notes]);
+  for (const [id, ns] of panelNotes) notesFor.set(id, [...(notesFor.get(id) ?? []), ...ns]);
+  const catalogParts: CatalogPart[] = live.map((p) => {
+    const m = material(p.materialKey);
+    const f = finishes.get(p.comp.partId)!;
+    return {
+      partId: p.comp.partId, name: p.comp.name, method: METHOD_NAME[p.method] ?? p.method, material: m.name, materialSwatch: m.colorHex,
+      paint: f.paint ? { name: f.paint.name, hex: f.paint.hex } : null, finish: f.finish, glue: glueFor.get(p.comp.partId) ?? [],
+      files: filesByPart.get(p.comp.partId) ?? [], size: primitiveSize(p.comp.primitive).map((x) => x.toFixed(1)).join(" × ") + " mm",
+      notes: [...(notesFor.get(p.comp.partId) ?? []), ...manualParts.filter((x) => x.partId === p.comp.partId).map((x) => x.instructions)],
+      render: [{ id: p.comp.partId, mesh: lowPoly.get(p.comp.partId)!, color: f.paint?.hex ?? colorOf(p) }],
+    };
+  });
+  const groupDefs: [string, string[]][] = [
+    ["Wood", ["sheet:wood", "wood"]], ["Acrylic & glazing", ["sheet:acrylic"]], ["Card & paper", ["paper", "sheet:card"]], ["3D-printing filament", ["filament"]],
+    ["Metal", ["metal"]], ["Paint & finishing", ["paint", "finishing"]], ["Adhesives", ["adhesive"]], ["Lighting", ["lighting"]], ["Hardware & other", ["hardware", "clay", "fabric", "tool"]],
+  ];
+  const catOf = (i: ShoppingItem) => i.category === "sheet" ? (i.key.startsWith("acrylic") ? "sheet:acrylic" : /card|grey/.test(i.key) ? "sheet:card" : "sheet:wood") : i.category;
+  const catalogGroups: CatalogGroup[] = groupDefs.map(([heading, cats]) => ({
+    heading,
+    items: shopping.items.filter((i) => i.tier !== "premium" && cats.includes(catOf(i))).map((i) => ({ name: i.name, spec: i.spec, quantity: i.quantity, swatch: i.swatch ?? (i.category === "sheet" || i.category === "filament" ? swatchFor(i.key) : undefined), usedFor: i.usedFor })),
+  }));
+  files.push(file("05_MATERIALS/build_catalogue.pdf", await catalogPdf({ title: input.projectName, cover: renderItems, groups: catalogGroups, parts: catalogParts }), "pdf", "Illustrated build catalogue: materials, colours, glue and every part", live.map((p) => p.comp.partId)));
 
   files.push(file("05_MATERIALS/material_manifest.json", JSON.stringify({ region: input.region, items: shopping.items, notes: shopping.notes }, null, 2), "json", "Machine-readable material list"));
   files.push(file("05_MATERIALS/shopping_list.csv", shoppingCsv(shopping), "csv", "Shopping list (spreadsheet)"));
@@ -315,6 +415,7 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
 
   return {
     files, readiness, checks, printCards, layouts: layoutSummary, steps, shopping, manualParts, partsList, zip: zipBuf,
+    catalog: { groups: catalogGroups, parts: catalogParts.map(({ render: _r, ...rest }) => { void _r; return rest; }) },
     stats: { components: live.length, printedFiles: prints.length, sheetParts: panels.length, sheets: layouts.reduce((s, l) => s + l.sheets.length, 0), filamentG: prints.reduce((s, p) => s + p.filamentEstimateG, 0) },
   };
 }
@@ -348,15 +449,20 @@ function shift(m: MeshData, o: Vec3): MeshData {
   return { positions: p, indices: m.indices };
 }
 
-function dimensionChecks(wasm: ManifoldToplevel, live: ResolvedPart[], world: Map<string, MeshData>, input: KitInput, checks: CheckItem[]) {
+function dimensionChecks(wasm: ManifoldToplevel, live: ResolvedPart[], world: Map<string, MeshData>, input: KitInput, checks: CheckItem[], dominantsFor: (id: string) => Manifold[]) {
   for (const p of live) {
     const m = world.get(p.comp.partId);
     if (!m || p.comp.role === "opening") continue;
-    const want = bboxSize(bboxOf(componentSolid(wasm, p.comp, input.meshLoader, 24)));
+    // Compare against the modelled shape *after* precedence trimming (a chimney is meant to stop at the roof).
+    let target = componentSolid(wasm, p.comp, input.meshLoader, 24);
+    const dom = dominantsFor(p.comp.partId);
+    if (dom.length) { const tr = target.subtract(wasm.Manifold.union(dom)); if (!tr.isEmpty()) target = tr; }
+    const want = bboxSize(bboxOf(target));
     const got = checkMesh(m).size;
     const t = material(p.materialKey).thicknessMm ?? 0;
     const tol = Math.max(1, 1.01 * t, 0.02 * Math.max(...want));
-    const worst = Math.max(...want.map((w, i) => Math.abs(w - got[i])));
+    // Thin dimensions of flat trim (railings, fretwork) follow the sheet thickness, not the model.
+    const worst = Math.max(...want.map((w, i) => (w < 5 ? 0 : Math.abs(w - got[i]))));
     checks.push({
       area: "dimensions", level: worst <= tol ? "pass" : "warn", partIds: [p.comp.partId],
       message: `${p.comp.partId}: manufactured ${got.map((x) => x.toFixed(1)).join(" × ")} mm vs modelled ${want.map((x) => x.toFixed(1)).join(" × ")} mm (max deviation ${worst.toFixed(1)} mm, tolerance ${tol.toFixed(1)} mm${p.method === "laser" ? ", layered/sheet construction rounds to whole sheets" : ""}).`,
@@ -364,7 +470,7 @@ function dimensionChecks(wasm: ManifoldToplevel, live: ResolvedPart[], world: Ma
   }
 }
 
-function connectionChecks(live: ResolvedPart[], byId: Map<string, ResolvedPart>, input: KitInput, checks: CheckItem[], panels: Panel[]) {
+function connectionChecks(live: ResolvedPart[], byId: Map<string, ResolvedPart>, input: KitInput, checks: CheckItem[], panels: Panel[], solids: Map<string, Manifold>) {
   for (const p of live) {
     const parentId = p.comp.parentPartId;
     const parent = parentId ? byId.get(parentId) : undefined;
@@ -374,13 +480,16 @@ function connectionChecks(live: ResolvedPart[], byId: Map<string, ResolvedPart>,
       const o = p.comp.primitive;
       const pm = material(p.materialKey);
       const pt = material(parent.materialKey).thicknessMm ?? 2;
-      if (parent.comp.primitive.type !== "box") { checks.push({ area: "connection", level: "warn", partIds: ids, message: `${p.comp.partId}: openings are only cut into box-shaped parents; ${parent.comp.partId} is a ${parent.comp.primitive.type}.` }); continue; }
-      const pb = parent.comp.primitive;
-      const along = Math.abs(p.comp.rotation[2]) % 180 === 90 ? pb.d : pb.w;
-      const localX = Math.abs(p.comp.rotation[2]) % 180 === 90 ? p.comp.position[1] - parent.comp.position[1] : p.comp.position[0] - parent.comp.position[0];
-      const margin = along / 2 - (Math.abs(localX) + o.w / 2);
-      const need = pt + (pm.transparent ? 3 : FRAME.border);
-      checks.push({ area: "connection", level: margin >= need ? "pass" : "warn", partIds: ids, message: `${p.comp.partId} in ${parent.comp.partId}: ${margin.toFixed(1)} mm from the corner (needs ≥ ${need.toFixed(1)} mm for the ${pm.transparent ? "pane overlap" : "frame"} to clear the corner joint).` });
+      if (parent.comp.primitive.type === "box" && parent.comp.rotation.every((r) => r === 0)) {
+        const pb = parent.comp.primitive;
+        const along = Math.abs(p.comp.rotation[2]) % 180 === 90 ? pb.d : pb.w;
+        const localX = Math.abs(p.comp.rotation[2]) % 180 === 90 ? p.comp.position[1] - parent.comp.position[1] : p.comp.position[0] - parent.comp.position[0];
+        const margin = along / 2 - (Math.abs(localX) + o.w / 2);
+        const need = pt + (pm.transparent ? 3 : FRAME.border);
+        checks.push({ area: "connection", level: margin >= need ? "pass" : "warn", partIds: ids, message: `${p.comp.partId} in ${parent.comp.partId}: ${margin.toFixed(1)} mm from the corner (needs ≥ ${need.toFixed(1)} mm for the ${pm.transparent ? "pane overlap" : "frame"} to clear the corner joint).` });
+      } else {
+        checks.push({ area: "connection", level: "pass", partIds: ids, message: `${p.comp.partId}: ${o.arch && o.arch !== "none" ? `${o.arch}-arched ` : ""}opening cut through the ${parent.comp.primitive.type} ${parent.comp.partId} in 3D.` });
+      }
       if (pm.transparent || /door leaf/i.test(panels.find((x) => x.partId === p.comp.partId)?.label ?? "") || (p.method === "print" && isDoor(p.comp))) checks.push({ area: "connection", level: "pass", partIds: ids, message: `${p.comp.partId}: ${pm.transparent ? "pane" : "door leaf"} ${(o.w + 6).toFixed(1)} × ${(o.h + 6).toFixed(1)} mm overlaps the ${o.w.toFixed(1)} × ${o.h.toFixed(1)} mm hole by 3 mm per side.` });
       else checks.push({ area: "connection", level: "pass", partIds: ids, message: `${p.comp.partId}: frame aperture ${(o.w - 2 * FRAME.lip).toFixed(1)} × ${(o.h - 2 * FRAME.lip).toFixed(1)} mm sits inside the ${o.w.toFixed(1)} × ${o.h.toFixed(1)} mm hole with ${FRAME.lip} mm lip.` });
       continue;
@@ -389,18 +498,17 @@ function connectionChecks(live: ResolvedPart[], byId: Map<string, ResolvedPart>,
       checks.push({ area: "connection", level: "pass", partIds: ids, message: `${p.comp.partId}: axle bore = axle Ø + ${(2 * input.printer.clearanceMm).toFixed(2)} mm diametral clearance (free-spinning).` });
       continue;
     }
-    // Generic resting contact: child bottom vs parent top.
-    const ps = primitiveSize(parent.comp.primitive), cs = primitiveSize(p.comp.primitive);
-    const parentTop = parent.comp.position[2] + ps[2];
-    const gap = p.comp.position[2] - parentTop;
-    if (p.comp.rotation.every((r) => r === 0) && parent.comp.rotation.every((r) => r === 0) && Math.abs(gap) < 0.5) {
-      const covers = cs[0] >= ps[0] - 0.01 && cs[1] >= ps[1] - 0.01;
-      checks.push({ area: "connection", level: "pass", partIds: ids, message: `${p.comp.partId} sits on ${parent.comp.partId} (contact at z = ${parentTop.toFixed(1)} mm${covers ? `, footprint covers the parent — overhang ${((cs[0] - ps[0]) / 2).toFixed(1)} / ${((cs[1] - ps[1]) / 2).toFixed(1)} mm` : ""}).` });
-      if (parent.method !== p.method && parent.method === "laser" && parent.comp.role === "shell")
-        checks.push({ area: "connection", level: "pass", partIds: ids, message: `${p.comp.partId} (${p.method}) on laser-cut ${parent.comp.partId}: wall tops are flat at z = ${parentTop.toFixed(1)} mm — glue joint, no slot needed.` });
-    } else if (gap > 0.5) {
-      checks.push({ area: "connection", level: "warn", partIds: ids, message: `${p.comp.partId} floats ${gap.toFixed(1)} mm above the top of ${parent.comp.partId} — check its position (it may attach to a side face instead).` });
-    }
+    // Support: every part must touch something (its parent or a neighbour) in the manufactured geometry.
+    const me = solids.get(p.comp.partId);
+    if (!me) continue;
+    const mb = me.boundingBox();
+    const touching = [...solids.entries()].filter(([id, o]) => {
+      if (id === p.comp.partId) return false;
+      const ob = o.boundingBox();
+      return [0, 1, 2].every((k) => mb.min[k] <= ob.max[k] + 0.6 && ob.min[k] <= mb.max[k] + 0.6);
+    }).map(([id]) => id);
+    if (!touching.length) checks.push({ area: "connection", level: "warn", partIds: ids, message: `${p.comp.partId} does not touch any other part — it would float. Check its position.` });
+    else checks.push({ area: "connection", level: "pass", partIds: [p.comp.partId, ...touching.slice(0, 3)], message: `${p.comp.partId} is supported by ${touching.slice(0, 3).join(", ")}${touching.length > 3 ? ` +${touching.length - 3}` : ""}.` });
   }
   // Only stock that carries slots/fingers/tabs is sensitive to thickness (panes and plain slices are not).
   const jointed = panels.filter((p) => p.method === "laser" && /wall|floor|lid/.test(p.label));
@@ -408,25 +516,27 @@ function connectionChecks(live: ResolvedPart[], byId: Map<string, ResolvedPart>,
   for (const t of laserThick) checks.push({ area: "connection", level: "warn", partIds: [], message: `Slots and finger joints are sized for nominal ${t}. Measure your stock — if it differs by > 0.1 mm, update the material and regenerate.` });
 }
 
-function overlapChecks(wasm: ManifoldToplevel, live: ResolvedPart[], input: KitInput, checks: CheckItem[]) {
-  const solids = live.filter((p) => p.comp.role !== "opening" && p.comp.primitive.type !== "mesh").map((p) => ({ p, s: componentSolid(wasm, p.comp, input.meshLoader, 16) }));
-  const related = (a: ResolvedPart, b: ResolvedPart) => a.comp.parentPartId === b.comp.partId || b.comp.parentPartId === a.comp.partId;
-  for (let i = 0; i < solids.length; i++)
-    for (let j = i + 1; j < solids.length; j++) {
-      const A = solids[i], B = solids[j];
-      const ba = bboxOf(A.s), bb = bboxOf(B.s);
+function overlapChecks(live: ResolvedPart[], solids: Map<string, Manifold>, ancestors: (id: string) => Set<string>, checks: CheckItem[]) {
+  // Runs on the real manufacturing geometry (after trimming), so it reports physical collisions, not modelling overlaps.
+  const list = live.filter((p) => p.comp.role !== "opening" && solids.has(p.comp.partId)).map((p) => ({ p, s: solids.get(p.comp.partId)! }));
+  let clean = 0;
+  for (let i = 0; i < list.length; i++)
+    for (let j = i + 1; j < list.length; j++) {
+      const A = list[i], B = list[j];
+      const ba = A.s.boundingBox(), bb = B.s.boundingBox();
       if ([0, 1, 2].some((k) => ba.max[k] <= bb.min[k] || bb.max[k] <= ba.min[k])) continue;
       const v = A.s.intersect(B.s).volume();
       const small = Math.min(A.s.volume(), B.s.volume());
-      if (v < 0.01 * small) continue;
-      const pct = (100 * v) / small;
+      if (v < 0.02 * small || v < 1) { clean++; continue; }
+      const related = ancestors(A.p.comp.partId).has(B.p.comp.partId) || ancestors(B.p.comp.partId).has(A.p.comp.partId);
       checks.push({
-        area: "assembly", level: related(A.p, B.p) ? "pass" : "warn", partIds: [A.p.comp.partId, B.p.comp.partId],
-        message: related(A.p, B.p)
-          ? `${B.p.comp.partId} is embedded ${pct.toFixed(0)} % into ${A.p.comp.partId} (parent/child — treated as intended, e.g. a chimney through a roof; trim it in the editor if not).`
-          : `${A.p.comp.partId} and ${B.p.comp.partId} overlap by ${pct.toFixed(0)} % of the smaller part — they will collide when assembled.`,
+        area: "assembly", level: related ? "pass" : "warn", partIds: [A.p.comp.partId, B.p.comp.partId],
+        message: related
+          ? `${A.p.comp.partId} and ${B.p.comp.partId} interlock by ${v.toFixed(0)} mm³ (parent/child — e.g. a tab in a slot or a pane behind its wall).`
+          : `${A.p.comp.partId} and ${B.p.comp.partId} still collide by ${v.toFixed(0)} mm³ (${((100 * v) / small).toFixed(0)} % of the smaller part) after trimming — adjust their positions or parent one to the other.`,
       });
     }
+  checks.push({ area: "assembly", level: "pass", partIds: [], message: `Collision check on the manufactured parts: ${clean} touching pairs with no meaningful overlap.` });
 }
 
 function dimensionsCsv(components: ComponentSpec[], world: Map<string, MeshData>) {
@@ -464,6 +574,7 @@ The DXF files use layers named CUT, ENGRAVE and SCORE with the same meanings. Li
 ${layouts.map((x) => `- ${x.materialKey} ${x.thicknessMm} mm: ${x.sheets.length} sheet(s) of ${x.sheetW} × ${x.sheetH} mm`).join("\n")}
 
 ## Importing
+- **Inkscape:** open the SVG directly — the document is in mm at true size. Layers panel (Ctrl+Shift+L) shows CUT, SCORE and ENGRAVE; Objects panel lists every part as a named group (e.g. "C-BODY-01-P03 · Main walls — front wall"). Hide ENGRAVE to see only the cut lines; move a part by selecting its group in each layer. Save as *Plain SVG* for laser software, or export DXF (R14) via Save As.
 - **LightBurn:** File → Import → choose the SVG (or DXF). Verify the size in the Shape Properties (should match the sheet). Assign speed/power per colour layer. Set "Cut" layers to Line mode.
 - **xTool Creative Space:** Import the SVG; each colour becomes a separate group — set the red group to *Cut*, blue to *Engrave (line)*, green to *Score*. Check the material thickness setting matches your stock.
 - Other software: import at 1:1, units mm. If the drawing comes in 3.78× too large or small, your software assumed 96 DPI pixels — set import units to millimetres.
@@ -503,4 +614,10 @@ Print time and exact filament use are not included — open the STL/3MF files in
 
 ${ENGINEERING_NOTE}
 `;
+}
+
+const METHOD_NAME: Record<string, string> = { print: "3D print", laser: "Laser cut", paper: "Paper", cardboard: "Cardboard", manual: "Hand-made / bought" };
+function swatchFor(key: string) {
+  const m = MATERIALS.find((x) => key.startsWith(x.key));
+  return m?.colorHex;
 }

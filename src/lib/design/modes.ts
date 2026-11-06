@@ -49,7 +49,9 @@ export interface AssignmentProposal {
 const BOLD = ["#e8553f", "#f29b38", "#f2c94c", "#7a9a5b", "#e86a92", "#4b2c4f"];
 const NATURAL = ["#d9b98a", "#b88d62", "#8f8a80", "#c9a06b", "#a3876a"];
 
-const isFlatish = (c: ComponentSpec) => c.primitive.type === "box" || c.primitive.type === "gable" || c.primitive.type === "wedge";
+const isFlatish = (c: ComponentSpec) => ["box", "gable", "wedge", "hip", "ngon", "stairs"].includes(c.primitive.type);
+const isFlatTrim = (c: ComponentSpec) => c.primitive.type === "railing" || (c.primitive.type === "ornament" && c.primitive.kind !== "finial");
+const isTurned = (c: ComponentSpec) => (c.primitive.type === "ornament" && c.primitive.kind === "finial") || (c.role === "column" && c.primitive.type === "cylinder");
 const isRound = (c: ComponentSpec) => c.primitive.type === "cylinder" || c.primitive.type === "ellipsoid";
 const isOrganic = (c: ComponentSpec) => ["head", "torso", "limb", "hand", "foot"].includes(c.role) || c.primitive.type === "ellipsoid";
 
@@ -75,8 +77,11 @@ export function proposeAssignments(mode: ModeKey, comps: ComponentSpec[], contro
         return P("print", "pla", "Printed in a flat, bold colour.", BOLD[i % BOLD.length]);
       case "woodwork":
         if (isDoor(c)) return P("laser", "plywood-3", "Plywood door leaf set behind the doorway.", "#b88d62");
-        if (c.role === "opening") return P("laser", "acrylic-clear-2", "Clear acrylic pane behind a cut-out opening.", "#cfe8f0");
-        return P("laser", "plywood-3", isRound(c) ? "Round form built from stacked plywood slices." : "Flat panels with finger joints.", "#d9b98a");
+        if (c.role === "opening") return P("laser", "acrylic-clear-2", "Clear acrylic pane behind the cut-out opening, with a plywood frame and muntins.", "#cfe8f0");
+        if (c.role === "column" && c.primitive.type === "cylinder") return P("manual", "dowel-birch", "Round birch dowel cut to length — the woodworker's porch post.", "#d9b98a");
+        if (isFlatTrim(c)) return P("laser", "plywood-3", "Fretwork cut from plywood in one piece.", "#d9b98a");
+        if (c.primitive.type === "pyramid") return P("laser", "plywood-3", "Spire from flat triangles taped and folded together.", "#d9b98a");
+        return P("laser", "plywood-3", isRound(c) ? "Round form built from stacked plywood slices." : c.primitive.type === "ngon" ? "Tower from flat wall panels on a slotted base." : "Flat panels with finger joints.", "#d9b98a");
       case "flatpack":
         if (c.role === "opening") return P("laser", "mdf-3", "Flat frame glued over the opening.", "#b88d62");
         return P("laser", "mdf-3", isRound(c) ? "Stacked slices on a dowel." : "Slot-together MDF panels.", "#b88d62");
@@ -93,11 +98,16 @@ export function proposeAssignments(mode: ModeKey, comps: ComponentSpec[], contro
         return P("print", "pla", "Printed structure / base.");
       case "mixed": {
         if (isDoor(c)) return P("print", "pla", "Printed door leaf — room for panel and handle detail.", c.colorHex);
-        if (c.role === "opening") return P("laser", "acrylic-clear-2", "Clear acrylic for real transparency.", "#cfe8f0");
-        if (c.role === "roof") return P("print", "pla", "Roof printed so tile/shingle texture and pitch come out cleanly.", c.colorHex);
+        if (c.role === "opening") return P("laser", "acrylic-clear-2", "Clear acrylic for real transparency, framed in painted plywood.", "#cfe8f0");
+        if (c.primitive.type === "pyramid" || (c.role === "roof" && !isFlatish(c))) return P("print", "pla", "Steep, many-sided roof — cleaner as one 3D print than as glued triangles.", c.colorHex);
+        if (c.role === "roof") return P("laser", "plywood-3", "Flat roof planes laser-cut with engraved shingles, painted.", c.colorHex);
+        if (isTurned(c)) return P("print", "pla", "Turned/round detail — 3D print.", c.colorHex);
+        if (isFlatTrim(c)) return P("laser", "plywood-3", "Gingerbread trim: one-piece laser-cut fretwork, painted.", c.colorHex);
+        if (c.role === "chimney") return P("print", "pla", "Chimney printed so it seats on the roof slope.", c.colorHex);
+        if (c.role === "stairs" || c.role === "base") return P("laser", "plywood-3", "Stacked or slotted plywood with engraved stone.", c.colorHex);
         if (c.role === "wheel" || c.role === "axle") return P("print", "pla", "Round, precise parts → 3D print.");
         if (isOrganic(c) || c.role === "detail" || c.role === "accessory") return P("print", "pla", "Curved or small detail → 3D print.");
-        if (isFlatish(c) && size > 40) return P("laser", "plywood-3", "Large flat surfaces → laser-cut plywood (fast, cheap, rigid).", "#d9b98a");
+        if (isFlatish(c) && size > 40) return P("laser", "plywood-3", "Large flat surfaces → laser-cut plywood with engraved cladding, painted.", c.colorHex);
         return P("print", "pla", "Small or complex → 3D print.");
       }
     }

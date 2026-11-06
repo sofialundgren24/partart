@@ -174,7 +174,7 @@ registerJob("build-kit", async (job, progress) => {
     await db.generatedFile.create({ data: { buildId, kitPath: f.kitPath, storagePath: rel, format: f.format, purpose: f.purpose, partIds: JSON.stringify(f.partIds), bytes: f.bytes, sha256: f.sha256 } });
   }
   const zipRel = await storage.put(`${dir}/PARTART_${project.name.replace(/[^A-Za-z0-9]+/g, "_")}.zip`, kit.zip);
-  await db.validationReport.create({ data: { buildId, status: kit.readiness, reportJson: JSON.stringify({ checks: kit.checks, printCards: kit.printCards, layouts: kit.layouts, manualParts: kit.manualParts, partsList: kit.partsList, stats: kit.stats }) } });
+  await db.validationReport.create({ data: { buildId, status: kit.readiness, reportJson: JSON.stringify({ checks: kit.checks, printCards: kit.printCards, layouts: kit.layouts, manualParts: kit.manualParts, partsList: kit.partsList, stats: kit.stats, catalog: kit.catalog }) } });
   await db.shoppingList.create({ data: { buildId, listJson: JSON.stringify(kit.shopping) } });
   for (const s of kit.steps) await db.assemblyStep.create({ data: { buildId, index: s.index, title: s.title, contentJson: JSON.stringify(s) } });
   await db.buildKit.update({ where: { id: buildId }, data: { status: "done", readiness: kit.readiness, zipPath: zipRel, snapshotJson: JSON.stringify({ components: comps, assignments, controls }) } });

@@ -9,6 +9,7 @@ const STEPS: { slug: string; label: string; fruit: FruitKind }[] = [
   { slug: "design", label: "Design", fruit: "strawberry" },
   { slug: "workshop", label: "Workshop", fruit: "tomato" },
   { slug: "kit", label: "Build kit", fruit: "apple" },
+  { slug: "catalog", label: "Catalogue", fruit: "strawberry" },
   { slug: "materials", label: "Materials", fruit: "orange" },
   { slug: "assembly", label: "Assembly", fruit: "pear" },
   { slug: "learn", label: "Learn", fruit: "lemon" },

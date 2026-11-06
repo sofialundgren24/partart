@@ -1,7 +1,7 @@
 // Category templates — the offline analysis provider. These are generic starting structures, explicitly labelled
 // "template" provenance: they are NOT derived from the user's photo. The user edits them to match the reference.
 
-import type { ComponentSpec, Primitive, Vec3 } from "../geometry/types";
+import { primitiveSize, type Cladding, type ComponentSpec, type Primitive, type Vec3 } from "../geometry/types";
 
 export type Category = "architecture" | "vehicles" | "figurines" | "furniture" | "toys" | "sculptures" | "home" | "decorative" | "other";
 export const CATEGORIES: { key: Category; label: string }[] = [
@@ -37,8 +37,68 @@ function house(): T[] {
   win(2, 58, -D / 2, B + 52);
   win(3, -58, D / 2, B + 52);
   win(4, 58, D / 2, B + 52);
-  win(5, -W / 2, 0, B + 52, 90);
+  win(5, -W / 2, 0, B + 52, -90);
   win(6, W / 2, 0, B + 52, 90);
+  return out;
+}
+
+/**
+ * Victorian / Queen Anne house: stone foundation, clapboard walls, an octagonal corner turret with a spire, a
+ * front cross gable over a central bay, a right wing with its own gable, a wraparound porch with turned posts,
+ * fretwork railings, frieze and brackets, steps, arched windows with muntins, chimney and gingerbread trim.
+ * Dimensions are a nominal model (~330 mm wide); the project rescales it to your target size.
+ */
+function victorian(): T[] {
+  const WALL = "#c9ccd0", TRIM = "#efe6d2", ROOF = "#5b6168", STONE = "#8a8a86", GLASS = "#f2c46b";
+  const box = (w: number, d: number, h: number, cladding?: Cladding): Primitive => ({ type: "box", w, d, h, ...(cladding ? { cladding } : {}) });
+  const win = (w: number, h: number, arch: "round" | "pointed" | "none", grid?: [number, number]): Primitive => ({ type: "box", w, d: 3, h, arch, ...(grid ? { grid } : {}) });
+  const a = 44 * Math.cos(Math.PI / 8); // turret apothem
+  const out: T[] = [
+    c("C-BASE-01", "Stone foundation & porch deck", "base", null, box(330, 250, 20, "stone"), [5, 0, 0], STONE),
+    c("C-BODY-01", "Main house walls", "shell", "C-BASE-01", box(170, 150, 150, "clapboard"), [0, 30, 20], WALL),
+    c("C-TOWER-01", "Corner turret", "shell", "C-BODY-01", { type: "ngon", n: 8, r: 44, h: 170, cladding: "clapboard" }, [-100, -20, 20], WALL),
+    c("C-WING-01", "Right wing walls", "shell", "C-BODY-01", box(80, 140, 150, "clapboard"), [125, 20, 20], WALL),
+    c("C-BAY-01", "Front bay walls", "shell", "C-BODY-01", box(84, 20, 150, "clapboard"), [0, -55, 20], WALL),
+    c("C-ROOF-01", "Main roof", "roof", "C-BODY-01", { type: "gable", w: 190, d: 170, h: 85, cladding: "shingle" }, [0, 30, 170], ROOF),
+    c("C-ROOF-02", "Front cross gable", "roof", "C-BAY-01", { type: "gable", w: 100, d: 96, h: 110, cladding: "shingle" }, [0, -15, 170], ROOF, [0, 0, 90]),
+    c("C-ROOF-03", "Wing gable roof", "roof", "C-WING-01", { type: "gable", w: 150, d: 90, h: 80, cladding: "shingle" }, [125, 20, 170], ROOF, [0, 0, 90]),
+    c("C-ROOF-04", "Turret spire", "roof", "C-TOWER-01", { type: "pyramid", n: 8, r: 50, h: 100, cladding: "shingle" }, [-100, -20, 190], ROOF),
+    c("C-ROOF-05", "Porch roof", "roof", "C-BASE-01", { type: "wedge", w: 250, d: 63, h: 18, cladding: "shingle" }, [5, -81.5, 95], ROOF, [0, 0, 180]),
+    c("C-CHIM-01", "Chimney", "chimney", "C-ROOF-01", box(24, 24, 112, "stone"), [40, 70, 170], STONE),
+    c("C-ORN-01", "Spire finial", "ornament", "C-ROOF-04", { type: "ornament", kind: "finial", w: 8, h: 28, d: 8 }, [-100, -20, 290], TRIM),
+    c("C-ORN-02", "Ridge cresting", "ornament", "C-ROOF-01", { type: "ornament", kind: "cresting", w: 110, h: 8, d: 1.5 }, [-5, 30, 255], ROOF),
+    c("C-ORN-03", "Front gable fan", "ornament", "C-ROOF-02", { type: "ornament", kind: "gablefan", w: 34, h: 40, d: 1.5 }, [0, -66, 236], TRIM),
+    c("C-ORN-04", "Wing gable fan", "ornament", "C-ROOF-03", { type: "ornament", kind: "gablefan", w: 30, h: 34, d: 1.5 }, [125, -56, 211], TRIM),
+    c("C-ORN-05", "Porch frieze", "ornament", "C-BASE-01", { type: "ornament", kind: "spandrel", w: 236, h: 9, d: 1.5 }, [5, -112, 82], TRIM),
+    c("C-STAIR-01", "Porch steps", "stairs", "C-BASE-01", { type: "stairs", w: 40, d: 30, h: 20, steps: 4 }, [5, -140, 0], STONE),
+    c("C-DOOR-01", "Front door", "opening", "C-BAY-01", win(26, 50, "round"), [0, -65, 22], "#4a4744"),
+  ];
+  // Porch posts with brackets, and fretwork railings between them (gap for the steps).
+  const posts = [-112, -60, -18, 28, 75, 122];
+  posts.forEach((x, i) => {
+    out.push(c(`C-COL-0${i + 1}`, `Porch post ${i + 1}`, "column", "C-BASE-01", { type: "cylinder", r: 3.2, h: 72 }, [x, -108, 20], TRIM));
+    if (i < posts.length - 1) out.push(c(`C-ORN-1${i}`, `Post bracket ${i + 1}`, "ornament", "C-BASE-01", { type: "ornament", kind: "bracket", w: 9, h: 9, d: 1.5 }, [x + 7.7, -108, 73], TRIM));
+  });
+  [[-112, -60], [-60, -18], [28, 75], [75, 122]].forEach(([x0, x1], i) =>
+    out.push(c(`C-RAIL-0${i + 1}`, `Porch railing ${i + 1}`, "railing", "C-BASE-01", { type: "railing", w: x1 - x0 - 7, h: 18, d: 2 }, [(x0 + x1) / 2, -108, 20], TRIM)));
+  // Windows (each its own part). Openings sit on the outer face of their parent; -Y is the front.
+  const W: [string, string, Primitive, Vec3, Vec3?][] = [
+    ["Bay window L", "C-BAY-01", win(16, 36, "round", [1, 2]), [-28, -65, 32]],
+    ["Bay window R", "C-BAY-01", win(16, 36, "round", [1, 2]), [28, -65, 32]],
+    ["Bay upper window L", "C-BAY-01", win(20, 40, "round", [2, 3]), [-16, -65, 104]],
+    ["Bay upper window R", "C-BAY-01", win(20, 40, "round", [2, 3]), [16, -65, 104]],
+    ["Gable window", "C-ROOF-02", win(22, 40, "pointed", [2, 3]), [0, -65, 186]],
+    ["Turret window, ground", "C-TOWER-01", win(18, 36, "round", [1, 2]), [-100, -20 - a, 40]],
+    ["Turret window, upper front", "C-TOWER-01", win(18, 40, "round", [1, 3]), [-100, -20 - a, 112]],
+    ["Turret window, upper left", "C-TOWER-01", win(18, 40, "round", [1, 3]), [-100 - a * Math.SQRT1_2, -20 - a * Math.SQRT1_2, 112], [0, 0, -45]],
+    ["Turret window, upper right", "C-TOWER-01", win(18, 40, "round", [1, 3]), [-100 + a * Math.SQRT1_2, -20 - a * Math.SQRT1_2, 112], [0, 0, 45]],
+    ["Wing picture window", "C-WING-01", win(30, 40, "round", [3, 2]), [125, -50, 32]],
+    ["Wing upper window L", "C-WING-01", win(16, 38, "round", [1, 3]), [110, -50, 104]],
+    ["Wing upper window R", "C-WING-01", win(16, 38, "round", [1, 3]), [140, -50, 104]],
+    ["Wing gable window", "C-ROOF-03", win(16, 30, "round", [1, 2]), [125, -55, 196]],
+    ["Wing side window", "C-WING-01", win(18, 38, "round", [1, 3]), [165, 20, 104], [0, 0, 90]],
+  ];
+  W.forEach(([name, parent, prim, pos, rot], i) => out.push(c(`C-WIN-${String(i + 1).padStart(2, "0")}`, name, "opening", parent, prim, pos, GLASS, rot ?? [0, 0, 0])));
   return out;
 }
 
@@ -107,9 +167,11 @@ function generic(): T[] {
   ];
 }
 
-export function templateFor(category: string): { components: T[]; label: string } {
+const VICTORIAN = /victoria|viktoria|queen anne|villa|turret|torn|tower|gingerbread|snickargl|dollhouse|dockskåp/i;
+
+export function templateFor(category: string, text = ""): { components: T[]; label: string } {
   switch (category) {
-    case "architecture": return { components: house(), label: "Pitched-roof house" };
+    case "architecture": return VICTORIAN.test(text) ? { components: victorian(), label: "Victorian house with turret" } : { components: house(), label: "Pitched-roof house" };
     case "vehicles": return { components: vehicle(), label: "Four-wheel vehicle" };
     case "figurines": return { components: figurine(), label: "Standing figure" };
     case "furniture": return { components: furniture(), label: "Chair" };
@@ -123,8 +185,7 @@ export function overallSize(components: Pick<ComponentSpec, "primitive" | "posit
   let max = 0;
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
   for (const comp of components) {
-    const p = comp.primitive;
-    const s = p.type === "cylinder" ? [2 * Math.max(p.r, p.rTop ?? p.r), 2 * Math.max(p.r, p.rTop ?? p.r), p.h] : [p.w, p.d, p.h];
+    const s = primitiveSize(comp.primitive);
     const ext = Math.max(...s);
     for (let k = 0; k < 3; k++) {
       lo[k] = Math.min(lo[k], comp.position[k] - (k === 2 ? 0 : ext / 2));
@@ -138,11 +199,8 @@ export function overallSize(components: Pick<ComponentSpec, "primitive" | "posit
 /** Uniformly scale primitive dimensions and positions. */
 export function scaleComponent<C extends Pick<ComponentSpec, "primitive" | "position">>(comp: C, f: number): C {
   const p = comp.primitive;
-  let prim: Primitive;
-  switch (p.type) {
-    case "cylinder": prim = { ...p, r: p.r * f, rTop: p.rTop === undefined ? undefined : p.rTop * f, h: p.h * f }; break;
-    case "mesh": prim = p; break; // meshes are scaled at import time
-    default: prim = { ...p, w: p.w * f, d: p.d * f, h: p.h * f } as Primitive;
-  }
-  return { ...comp, primitive: prim, position: comp.position.map((x) => x * f) as Vec3 };
+  if (p.type === "mesh") return comp; // meshes are scaled at import time
+  const prim = { ...p } as Record<string, unknown>;
+  for (const k of ["w", "d", "h", "r", "rTop"]) if (typeof prim[k] === "number") prim[k] = (prim[k] as number) * f;
+  return { ...comp, primitive: prim as Primitive, position: comp.position.map((x) => x * f) as Vec3 };
 }

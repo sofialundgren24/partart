@@ -5,6 +5,7 @@ import type { ManifoldToplevel } from "manifold-3d";
 import { bboxOf, bboxSize, componentSolid, dropToBed, placeSolid, toMeshData, type Manifold } from "../geometry/kernel";
 import { checkMesh, overhangs, type MeshCheckResult, type OverhangResult } from "../geometry/meshCheck";
 import { isDoor, primitiveSize, type ComponentSpec, type MeshData, type Vec3 } from "../geometry/types";
+import { extrudeXZ, frameSection, ngonPoints, openingSection } from "../geometry/profiles";
 import { material } from "../materials/catalog";
 import type { PrinterProfile, ResolvedPart } from "./resolve";
 
@@ -17,6 +18,7 @@ export interface PrintPart {
   kind: "part" | "section" | "pins";
   mesh: MeshData; // oriented for printing, on the bed (min z = 0), centred on XY
   worldMesh: MeshData; // in project space for the assembled preview
+  worldSolid?: Manifold;
   orientation: { label: string; rotation: Vec3 };
   check: MeshCheckResult;
   overhang: OverhangResult;
@@ -34,6 +36,10 @@ export interface PrintContext {
   meshLoader?: (p: string) => MeshData;
   /** World solids of the openings that must be cut out of a given parent (partId → hole solids). */
   openingsFor: (partId: string) => Manifold[];
+  /** Volumes of parts that take precedence where they overlap this part (it is trimmed to them). */
+  dominantsFor?: (partId: string) => Manifold[];
+  /** Wall thickness of a part's parent (so panes/leaves sit behind the wall, frames in front). */
+  parentThickness?: (partId: string) => number;
 }
 
 export const FRAME = { border: 2.5, lip: 1.5, thickness: 2 };
@@ -52,20 +58,29 @@ export function printSolid(ctx: PrintContext, part: ResolvedPart): { solid: Mani
   let minFeature = Math.min(...primitiveSize(p));
   let local: Manifold;
 
+  const parentT = c.parentPartId && ctx.parentThickness ? ctx.parentThickness(c.parentPartId) : printWallMm(ctx.printer);
   if (isDoor(c) && p.type === "box") {
-    // Door leaf: a plate glued behind the doorway with a raised panel on its visible face.
-    const leaf = wasm.Manifold.cube([p.w + 6, 2, p.h + 3], true).translate([0, 1, (p.h + 3) / 2 - 3]);
-    const panel = wasm.Manifold.cube([p.w * 0.7, 1, p.h * 0.38], true);
-    local = wasm.Manifold.union([leaf, panel.translate([0, -0.5, p.h * 0.72]), panel.translate([0, -0.5, p.h * 0.26])]);
-    minFeature = 1;
-    notes.push(`Door leaf ${fmt(p.w + 6)} × ${fmt(p.h + 3)} mm with raised panels; glue it behind the ${fmt(p.w)} × ${fmt(p.h)} mm doorway.`);
+    // Door leaf: the doorway outline grown by 3 mm, glued behind the wall, with two raised panels on its face.
+    const leafSec = openingSection(wasm, p.w, p.h, p.arch).offset(3, "Round", 2, 24);
+    const leaf = extrudeXZ(wasm, leafSec, 2).translate([0, parentT + 1, 0]);
+    const panel = wasm.Manifold.cube([p.w * 0.34, 1.2, p.h * 0.3], true);
+    local = wasm.Manifold.union([leaf, ...[-0.2, 0.2].flatMap((fx) => [panel.translate([p.w * fx, parentT - 0.6, p.h * 0.28]), panel.translate([p.w * fx, parentT - 0.6, p.h * 0.66])])]);
+    minFeature = 1.2;
+    notes.push(`Door leaf ${p.arch && p.arch !== "none" ? `(${p.arch} arch) ` : ""}glued behind the ${fmt(p.w)} × ${fmt(p.h)} mm doorway; raised panels face out.`);
   } else if (c.role === "opening" && p.type === "box") {
-    // A printed opening is a flat frame glued over the hole in its wall.
-    const outer = wasm.Manifold.cube([p.w + 2 * FRAME.border, FRAME.thickness, p.h + 2 * FRAME.border], true);
-    const inner = wasm.Manifold.cube([p.w - 2 * FRAME.lip, FRAME.thickness * 3, p.h - 2 * FRAME.lip], true);
-    local = outer.subtract(inner).translate([0, 0, p.h / 2]);
+    // A printed opening is a flat frame (with muntins if requested) glued over the hole from outside.
+    const sec = frameSection(wasm, p.w, p.h, p.arch, FRAME.border, FRAME.lip, p.grid);
+    local = extrudeXZ(wasm, sec, FRAME.thickness).translate([0, -FRAME.thickness / 2, 0]);
     minFeature = Math.min(FRAME.border + FRAME.lip, FRAME.thickness);
-    notes.push(`Frame: aperture ${fmt(p.w - 2 * FRAME.lip)} × ${fmt(p.h - 2 * FRAME.lip)} mm, overlaps the ${fmt(p.w)} × ${fmt(p.h)} mm wall opening by ${FRAME.lip} mm on every side.`);
+    notes.push(`Frame${p.arch && p.arch !== "none" ? ` (${p.arch} arch)` : ""}${p.grid ? ` with ${p.grid[0]}×${p.grid[1]} muntins` : ""}: overlaps the ${fmt(p.w)} × ${fmt(p.h)} mm opening by ${FRAME.lip} mm. Glaze from behind with clear acetate or an acrylic offcut.`);
+  } else if (c.role === "shell" && p.type === "ngon") {
+    const t = printWallMm(ctx.printer);
+    const outer = componentLocal(ctx, c);
+    const ri = p.r - t / Math.cos(Math.PI / p.n);
+    const inner = wasm.Manifold.extrude(wasm.CrossSection.ofPolygons([ngonPoints(p.n, ri)]), p.h).translate([0, 0, t]);
+    local = outer.subtract(inner);
+    minFeature = t;
+    notes.push(`Hollow ${p.n}-sided tower, ${fmt(t)} mm walls, open top.`);
   } else if (c.role === "shell" && p.type === "box") {
     const t = printWallMm(ctx.printer);
     const outer = wasm.Manifold.cube([p.w, p.d, p.h], true).translate([0, 0, p.h / 2]);
@@ -95,6 +110,15 @@ export function printSolid(ctx: PrintContext, part: ResolvedPart): { solid: Mani
   if (holes.length) {
     solid = solid.subtract(wasm.Manifold.union(holes));
     notes.push(`${holes.length} opening(s) cut through.`);
+  }
+  const dom = ctx.dominantsFor?.(c.partId) ?? [];
+  if (dom.length) {
+    const before = solid.volume();
+    const trimmed = solid.subtract(wasm.Manifold.union(dom));
+    if (trimmed.volume() < before * 0.999) {
+      solid = trimmed;
+      notes.push("Shaped to sit against the neighbouring parts (hidden portion removed).");
+    }
   }
   return { solid, minFeature, notes };
 }
@@ -229,6 +253,10 @@ export function buildPrintParts(ctx: PrintContext, parts: ResolvedPart[]): { pri
   for (const part of parts) {
     const c = part.comp;
     const { solid, minFeature, notes } = printSolid(ctx, part);
+    if (solid.isEmpty() || solid.volume() < 0.5) {
+      warnings.push(`${c.partId}: nothing left to print — it lies entirely inside another part.`);
+      continue;
+    }
     const worldMesh = toMeshData(solid);
     const best = chooseOrientation(solid, ctx.printer);
     const size0 = bboxSize(bboxOf(best.solid));
@@ -261,6 +289,7 @@ export function buildPrintParts(ctx: PrintContext, parts: ResolvedPart[]): { pri
         kind: pieces.length > 1 ? "section" : "part",
         mesh,
         worldMesh: i === 0 ? worldMesh : { positions: new Float32Array(), indices: new Uint32Array() },
+        worldSolid: i === 0 ? solid : undefined,
         orientation: { label: best.label, rotation: best.rotation },
         check,
         overhang: ov,

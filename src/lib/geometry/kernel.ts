@@ -3,6 +3,7 @@
 
 import type { Manifold as ManifoldT, CrossSection as CrossSectionT, ManifoldToplevel, Mat4 } from "manifold-3d";
 import type { BBox, ComponentSpec, MeshData, Primitive, Vec3 } from "./types";
+import { extrudeXZ, finialHalf, ngonPoints, openingSection, ornamentSection, railingSection, stairsSolid } from "./profiles";
 
 let wasmPromise: Promise<ManifoldToplevel> | null = null;
 
@@ -30,6 +31,7 @@ export function primitiveSolid(wasm: ManifoldToplevel, p: Primitive, meshLoader?
   const SEG = segments;
   switch (p.type) {
     case "box":
+      if (p.arch && p.arch !== "none") return extrudeXZ(wasm, openingSection(wasm, p.w, p.h, p.arch), p.d);
       return Manifold.cube([p.w, p.d, p.h], true).translate([0, 0, p.h / 2]);
     case "cylinder":
       return Manifold.cylinder(p.h, p.r, p.rTop ?? p.r, SEG, false);
@@ -44,6 +46,22 @@ export function primitiveSolid(wasm: ManifoldToplevel, p: Primitive, meshLoader?
       const tri = CrossSection.ofPolygons([[[-p.d / 2, 0], [p.d / 2, 0], [-p.d / 2, p.h]]]);
       return extrudeAlongX(Manifold.extrude(tri, p.w), p.w);
     }
+    case "hip": {
+      const r = Math.abs(p.w - p.d) / 2;
+      const ridge: Vec3[] = p.w >= p.d ? [[-r, 0, p.h], [r, 0, p.h]] : [[0, -r, p.h], [0, r, p.h]];
+      return Manifold.hull([[-p.w / 2, -p.d / 2, 0], [p.w / 2, -p.d / 2, 0], [p.w / 2, p.d / 2, 0], [-p.w / 2, p.d / 2, 0], ...ridge]);
+    }
+    case "ngon":
+      return Manifold.extrude(CrossSection.ofPolygons([ngonPoints(p.n, p.r)]), p.h);
+    case "pyramid":
+      return Manifold.hull([...ngonPoints(p.n, p.r).map(([x, y]) => [x, y, 0] as Vec3), [0, 0, p.h]]);
+    case "stairs":
+      return stairsSolid(wasm, p.w, p.d, p.h, p.steps);
+    case "railing":
+      return extrudeXZ(wasm, railingSection(wasm, p.w, p.h), p.d);
+    case "ornament":
+      if (p.kind === "finial") return wasm.CrossSection.ofPolygons([finialHalf(p.w, p.h)]).revolve(SEG);
+      return extrudeXZ(wasm, ornamentSection(wasm, p.kind, p.w, p.h), p.d);
     case "mesh": {
       if (!meshLoader) throw new Error("Mesh primitive requires a mesh loader");
       return manifoldFromMesh(wasm, meshLoader(p.storagePath));

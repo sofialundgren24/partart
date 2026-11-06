@@ -4,8 +4,32 @@ import { api } from "@/lib/client/api";
 import type { ComponentRow } from "./ProjectContext";
 import { ProvenanceChip, Swatch } from "./ui";
 
-const ROLES = ["base", "structure", "shell", "roof", "opening", "detail", "joint", "wheel", "axle", "head", "torso", "limb", "hand", "foot", "accessory"];
-type Prim = { type: string; w?: number; d?: number; h?: number; r?: number; rTop?: number; storagePath?: string };
+const ROLES = ["base", "structure", "shell", "roof", "opening", "detail", "joint", "wheel", "axle", "head", "torso", "limb", "hand", "foot", "accessory", "column", "railing", "stairs", "ornament", "chimney"];
+type Prim = {
+  type: string; w?: number; d?: number; h?: number; r?: number; rTop?: number; n?: number; steps?: number; storagePath?: string;
+  cladding?: string; arch?: string; grid?: [number, number]; kind?: string;
+};
+const SHAPES = ["box", "gable", "hip", "wedge", "ngon", "pyramid", "stairs", "railing", "ornament", "cylinder", "ellipsoid"];
+const SHAPE_LABEL: Record<string, string> = {
+  box: "box / wall block", gable: "gable roof (prism)", hip: "hip roof", wedge: "shed / ramp", ngon: "n-sided tower", pyramid: "n-sided spire",
+  stairs: "stairs", railing: "railing (fretwork)", ornament: "ornament / trim", cylinder: "cylinder / cone", ellipsoid: "ellipsoid",
+};
+const CLAD = ["none", "clapboard", "shingle", "fishscale", "stone", "brick", "boardbatten"];
+const CLADDABLE = ["box", "gable", "hip", "wedge", "ngon", "pyramid"];
+
+/** Sensible starting parameters when the shape type changes, keeping the overall size. */
+function retype(t: string, old: Prim): Prim {
+  const s = Math.max(old.w ?? (old.r ?? 10) * 2, 1);
+  const h = old.h ?? s;
+  switch (t) {
+    case "cylinder": return { type: t, r: s / 2, h };
+    case "ngon": case "pyramid": return { type: t, n: 8, r: s / 2, h };
+    case "stairs": return { type: t, w: s, d: old.d ?? s, h, steps: 4 };
+    case "railing": return { type: t, w: s, h, d: 2 };
+    case "ornament": return { type: t, kind: "bracket", w: s, h, d: 1.5 };
+    default: return { type: t, w: old.w ?? s, d: old.d ?? s, h };
+  }
+}
 
 export function ComponentTree({ components, selected, onSelect, checked, onCheck }: {
   components: ComponentRow[]; selected: string | null; onSelect: (id: string) => void; checked?: Set<string>; onCheck?: (id: string) => void;
@@ -88,29 +112,53 @@ export function ComponentInspector({ projectId, comp, components, onChanged }: {
       {prim.type !== "mesh" ? (
         <>
           <label className="text-[11px] font-semibold text-ink-soft">Shape
-            <select className="input px-2 py-1 text-sm text-ink" value={draft.prim.type} onChange={(e) => {
-              const t = e.target.value;
-              const s = Math.max(draft.prim.w ?? (draft.prim.r ?? 10) * 2, 1);
-              setDraft({ ...draft, prim: t === "cylinder" ? { type: t, r: s / 2, h: draft.prim.h ?? s } : { type: t, w: draft.prim.w ?? s, d: draft.prim.d ?? s, h: draft.prim.h ?? s } });
-            }}>
-              {["box", "gable", "wedge", "cylinder", "ellipsoid"].map((t) => <option key={t}>{t}</option>)}
+            <select className="input px-2 py-1 text-sm text-ink" value={draft.prim.type} onChange={(e) => setDraft({ ...draft, prim: retype(e.target.value, draft.prim) })}>
+              {SHAPES.map((t) => <option key={t} value={t}>{SHAPE_LABEL[t]}</option>)}
             </select>
           </label>
           <div className="grid grid-cols-3 gap-2">
-            {draft.prim.type === "cylinder" ? (
-              <>
-                {num(draft.prim.r, (n) => setPrim({ r: n }), "radius")}
-                {num(draft.prim.rTop ?? draft.prim.r, (n) => setPrim({ rTop: n }), "top radius", 0)}
-                {num(draft.prim.h, (n) => setPrim({ h: n }), "height")}
-              </>
-            ) : (
-              <>
-                {num(draft.prim.w, (n) => setPrim({ w: n }), "width X")}
-                {num(draft.prim.d, (n) => setPrim({ d: n }), "depth Y")}
-                {num(draft.prim.h, (n) => setPrim({ h: n }), "height Z")}
-              </>
-            )}
+            {draft.prim.type === "cylinder" && (<>
+              {num(draft.prim.r, (n) => setPrim({ r: n }), "radius")}
+              {num(draft.prim.rTop ?? draft.prim.r, (n) => setPrim({ rTop: n }), "top radius", 0)}
+              {num(draft.prim.h, (n) => setPrim({ h: n }), "height")}
+            </>)}
+            {(draft.prim.type === "ngon" || draft.prim.type === "pyramid") && (<>
+              {num(draft.prim.n, (n) => setPrim({ n: Math.max(3, Math.round(n)) }), "sides", 3)}
+              {num(draft.prim.r, (n) => setPrim({ r: n }), "radius")}
+              {num(draft.prim.h, (n) => setPrim({ h: n }), "height")}
+            </>)}
+            {!["cylinder", "ngon", "pyramid"].includes(draft.prim.type) && (<>
+              {num(draft.prim.w, (n) => setPrim({ w: n }), draft.prim.type === "gable" ? "ridge length" : "width X")}
+              {num(draft.prim.d, (n) => setPrim({ d: n }), draft.prim.type === "gable" ? "span" : ["railing", "ornament"].includes(draft.prim.type) ? "thickness" : "depth Y")}
+              {num(draft.prim.h, (n) => setPrim({ h: n }), "height Z")}
+            </>)}
+            {draft.prim.type === "stairs" && num(draft.prim.steps, (n) => setPrim({ steps: Math.max(1, Math.round(n)) }), "steps", 1)}
           </div>
+          {CLADDABLE.includes(draft.prim.type) && (
+            <label className="text-[11px] font-semibold text-ink-soft">Surface (engraved on sheet parts)
+              <select className="input px-2 py-1 text-sm text-ink" value={draft.prim.cladding ?? "none"} onChange={(e) => setPrim({ cladding: e.target.value === "none" ? undefined : e.target.value })}>
+                {CLAD.map((x) => <option key={x}>{x}</option>)}
+              </select>
+            </label>
+          )}
+          {draft.prim.type === "ornament" && (
+            <label className="text-[11px] font-semibold text-ink-soft">Ornament
+              <select className="input px-2 py-1 text-sm text-ink" value={draft.prim.kind ?? "bracket"} onChange={(e) => setPrim({ kind: e.target.value })}>
+                {["bracket", "spandrel", "gablefan", "cresting", "finial"].map((x) => <option key={x}>{x}</option>)}
+              </select>
+            </label>
+          )}
+          {draft.prim.type === "box" && draft.role === "opening" && (
+            <div className="grid grid-cols-3 gap-2">
+              <label className="text-[11px] font-semibold text-ink-soft">Top
+                <select className="input px-2 py-1 text-sm text-ink" value={draft.prim.arch ?? "none"} onChange={(e) => setPrim({ arch: e.target.value === "none" ? undefined : e.target.value })}>
+                  {["none", "round", "pointed"].map((x) => <option key={x}>{x}</option>)}
+                </select>
+              </label>
+              {num(draft.prim.grid?.[0] ?? 1, (n) => setPrim({ grid: [Math.max(1, Math.round(n)), draft.prim.grid?.[1] ?? 1] }), "muntin cols", 1)}
+              {num(draft.prim.grid?.[1] ?? 1, (n) => setPrim({ grid: [draft.prim.grid?.[0] ?? 1, Math.max(1, Math.round(n))] }), "muntin rows", 1)}
+            </div>
+          )}
         </>
       ) : <p className="text-xs text-ink-soft">Imported mesh — {[prim.w, prim.d, prim.h].map((x) => x?.toFixed(1)).join(" × ")} mm.</p>}
       <div className="grid grid-cols-3 gap-2">
@@ -134,9 +182,17 @@ export function ComponentInspector({ projectId, comp, components, onChanged }: {
 }
 
 function cleanPrim(p: Prim) {
-  if (p.type === "cylinder") return { type: "cylinder", r: p.r, h: p.h, ...(p.rTop !== undefined && p.rTop !== p.r ? { rTop: p.rTop } : {}) };
-  if (p.type === "mesh") return p;
-  return { type: p.type, w: p.w, d: p.d, h: p.h };
+  const clad = p.cladding && CLADDABLE.includes(p.type) ? { cladding: p.cladding } : {};
+  switch (p.type) {
+    case "cylinder": return { type: "cylinder", r: p.r, h: p.h, ...(p.rTop !== undefined && p.rTop !== p.r ? { rTop: p.rTop } : {}) };
+    case "mesh": return p;
+    case "ngon": case "pyramid": return { type: p.type, n: p.n, r: p.r, h: p.h, ...clad };
+    case "stairs": return { type: p.type, w: p.w, d: p.d, h: p.h, steps: p.steps ?? 3 };
+    case "railing": return { type: p.type, w: p.w, d: p.d, h: p.h };
+    case "ornament": return { type: p.type, kind: p.kind ?? "bracket", w: p.w, d: p.d, h: p.h };
+    case "box": return { type: "box", w: p.w, d: p.d, h: p.h, ...clad, ...(p.arch ? { arch: p.arch } : {}), ...(p.grid && (p.grid[0] > 1 || p.grid[1] > 1) ? { grid: p.grid } : {}) };
+    default: return { type: p.type, w: p.w, d: p.d, h: p.h, ...clad };
+  }
 }
 
 export function AddComponent({ projectId, components, onAdded }: { projectId: string; components: ComponentRow[]; onAdded: (m?: string) => void }) {
@@ -151,7 +207,7 @@ export function AddComponent({ projectId, components, onAdded }: { projectId: st
       <input className="input py-1 text-sm" value={name} onChange={(e) => setName(e.target.value)} />
       <div className="grid grid-cols-3 gap-2">
         <select className="input px-2 py-1 text-sm" value={role} onChange={(e) => setRole(e.target.value)}>{ROLES.map((r) => <option key={r}>{r}</option>)}</select>
-        <select className="input px-2 py-1 text-sm" value={type} onChange={(e) => setType(e.target.value)}>{["box", "gable", "wedge", "cylinder", "ellipsoid"].map((t) => <option key={t}>{t}</option>)}</select>
+        <select className="input px-2 py-1 text-sm" value={type} onChange={(e) => setType(e.target.value)}>{SHAPES.map((t) => <option key={t} value={t}>{SHAPE_LABEL[t]}</option>)}</select>
         <select className="input px-2 py-1 text-sm" value={parent} onChange={(e) => setParent(e.target.value)}>
           <option value="">no parent</option>
           {components.map((c) => <option key={c.partId} value={c.partId}>{c.partId}</option>)}
@@ -159,7 +215,7 @@ export function AddComponent({ projectId, components, onAdded }: { projectId: st
       </div>
       <div className="flex gap-2">
         <button className="btn btn-primary btn-sm" onClick={async () => {
-          await api(`/api/projects/${projectId}/components`, { method: "POST", json: { name, role, parentPartId: parent || null, primitive: type === "cylinder" ? { type, r: 10, h: 20 } : { type, w: 20, d: 20, h: 20 } } });
+          await api(`/api/projects/${projectId}/components`, { method: "POST", json: { name, role, parentPartId: parent || null, primitive: cleanPrim(retype(type, { type: "box", w: 20, d: 20, h: 20 })) } });
           setOpen(false); onAdded("Added");
         }}>Add</button>
         <button className="btn btn-sm" onClick={() => setOpen(false)}>Cancel</button>

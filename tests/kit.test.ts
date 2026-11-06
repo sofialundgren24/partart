@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import JSZip from "jszip";
-import { templateFor } from "@/lib/analysis/templates";
+import { scaleComponent, templateFor } from "@/lib/analysis/templates";
 import { proposeAssignments, DEFAULT_CONTROLS, modeExtras, type ModeKey } from "@/lib/design/modes";
 import { buildKit } from "@/lib/manufacture/kit";
 import { PRINTER_PRESETS, LASER_PRESETS } from "@/lib/manufacture/resolve";
@@ -45,7 +45,7 @@ describe("build kit", () => {
   }
 
   it("splits a part that is larger than the printer", async () => {
-    const big = comps("architecture").map((c) => ({ ...c, primitive: c.primitive.type === "cylinder" || c.primitive.type === "mesh" ? c.primitive : { ...c.primitive, w: c.primitive.w * 1.6, d: c.primitive.d * 1.6, h: c.primitive.h * 1.6 }, position: c.position.map((x) => x * 1.6) as [number, number, number] }));
+    const big = comps("architecture").map((c) => ({ ...c, ...scaleComponent(c, 1.6) }));
     const kit = await buildKit({ projectName: "big", category: "architecture", designName: "r", mode: "realistic", components: big, assignments: proposeAssignments("realistic", big, DEFAULT_CONTROLS), printer: PRINTER_PRESETS[2], laser: LASER_PRESETS[0], region: "SE", finish: "raw", references: [] });
     const sections = kit.printCards.filter((c) => /-S\d/.test(c.fileId));
     expect(sections.length).toBeGreaterThan(1);

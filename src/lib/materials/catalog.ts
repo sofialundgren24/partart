@@ -5,7 +5,7 @@ export type Method = "print" | "laser" | "paper" | "cardboard" | "manual" | "omi
 export interface MaterialDef {
   key: string;
   name: string;
-  kind: "filament" | "resin" | "sheet" | "paper" | "fabric" | "clay" | "finish";
+  kind: "filament" | "resin" | "sheet" | "paper" | "fabric" | "clay" | "finish" | "wood" | "metal";
   methods: Method[];
   thicknessMm?: number; // nominal sheet thickness — real stock varies, measure it
   densityGcm3?: number;
@@ -31,6 +31,9 @@ export const MATERIALS: MaterialDef[] = [
   { key: "paper-160", name: "Paper 160 g/m²", kind: "paper", methods: ["paper"], thicknessMm: 0.2, colorHex: "#faf5ea", notes: "Thinner, easier to fold small details." },
   { key: "polymer-clay", name: "Polymer clay", kind: "clay", methods: ["manual"], colorHex: "#d98c6a", notes: "Oven-cured per the brand's instructions. Can be sculpted over a printed armature." },
   { key: "fabric-cotton", name: "Thin cotton fabric", kind: "fabric", methods: ["manual"], colorHex: "#efe3d0", notes: "Curtains, clothing. Seal edges with fray check or diluted PVA." },
+  { key: "dowel-birch", name: "Round birch dowel", kind: "wood", methods: ["manual"], densityGcm3: 0.65, colorHex: "#d9b98a", notes: "Turned-look posts and columns: cut to length, sand, paint. Choose the diameter in the parts list." },
+  { key: "brass-rod", name: "Brass rod / tube", kind: "metal", methods: ["manual"], densityGcm3: 8.5, colorHex: "#c9a24a", notes: "Thin posts, finial spikes, railings and axles. Cut with a razor saw or rotary tool; glue with epoxy." },
+  { key: "brass-sheet-05", name: "Brass sheet 0.5 mm", kind: "metal", methods: ["manual"], thicknessMm: 0.5, densityGcm3: 8.5, colorHex: "#d4af5a", notes: "Hand-cut flashing, cresting or hardware. Not for diode/CO₂ lasers (metal needs a fibre laser)." },
   { key: "paint-acrylic", name: "Acrylic paint", kind: "finish", methods: ["manual"], colorHex: "#c0392b", notes: "Hand-painted details." },
 ];
 

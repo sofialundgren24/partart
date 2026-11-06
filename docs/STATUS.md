@@ -1,6 +1,33 @@
 # PARTART — Build status
 
-_Last updated 2026-11-05 (first build session)._
+_Last updated 2026-11-06 (session 2: architecture)._
+
+## Session 2 — from cubes to buildings
+
+Goal: a photo of a complex house (Victorian, with turret, porch and trim) must come apart into real walls, roofs and
+details, give Inkscape-ready files, and show every material, colour and glue in a catalogue; what can't be built
+flat is 3D-printed.
+
+| Added | What it does |
+|---|---|
+| Architectural primitives | `ngon` towers, `pyramid` spires, `hip` roofs, `stairs`, `railing` (fretwork), `ornament` (bracket, spandrel/frieze, gable fan, ridge cresting, finial); openings with round/pointed **arches** and **muntin grids**; per-surface **cladding** (clapboard, shingle, fishscale, stone, brick, board-and-batten) |
+| Precedence trimming | Where volumes overlap (bay against house, cross gable into main roof, chimney through roof, turret in the corner) the ancestor/earlier part keeps its shape and the other is trimmed **in 3D** — sheet panels get their true outline read back from the trimmed slab, printed parts get true contact faces |
+| Openings in any parent | Window/door holes are cut in 3D, so they work in tower faces and gable ends, with arches |
+| Sheet panels face out | Every panel's outer face is up on the sheet, so engraved cladding lands on the outside |
+| Inkscape SVG | Inkscape layers (CUT / SCORE / ENGRAVE) with one named group per part, mm document units |
+| Build catalogue | `05_MATERIALS/build_catalogue.pdf` + Catalogue page: materials grouped (wood, acrylic, filament, metal, paint, glue, lighting, hardware) with swatches, and every part with render, method, material, paint colour, glue and files |
+| Paints, metal, lighting | Each part's colour matched to a named hobby paint; birch dowel / brass rod / brass wire; warm-white LED string for glazed windows |
+| Victorian template | 47-part Queen Anne house (used offline when the description mentions Victorian/turret/villa…) |
+| Claude schema | Same vocabulary in the vision analysis (types, arches, grids, cladding, ornaments, model-maker decomposition rules) |
+| Collision check | Now runs on the manufactured parts after trimming, plus a "does every part touch something" support check |
+
+Victorian house, tested (`tests/victorian.test.ts`): woodwork → 110 sheet parts on 6 sheets, *ready with warnings*
+(only the "measure your stock" reminder); mixed → 94 sheet parts + 10 prints, same; realistic → 49 prints, *ready*;
+papercraft at 330 mm → *needs adjustment* (foundation is larger than A4 — correct, scale down or use A3).
+
+Still true: without `ANTHROPIC_API_KEY` the house comes from the template, not from the photo; with a key the
+analysis uses the new vocabulary but has not been run here.
+
 
 ## What was implemented
 
@@ -53,7 +80,8 @@ Validation is geometric and fit-based; it is **not** structural engineering.
 
 ## Tests
 
-`npm test` — 17 tests, all passing; `next build` succeeds:
+`npm test` — 22 tests, all passing; `next build` succeeds:
+- Victorian house through woodwork / mixed / realistic / papercraft (no geometry failures, catalogue present);
 - rotation convention matches manifold-3d;
 - STL/OBJ/GLB round-trips (watertight, sizes in mm), 3MF structure and units, box → 6 jointed panels, kerf offset = kerf/2 per side, nesting + SVG/DXF layers;
 - full kit generation for architecture × {realistic, woodwork, mixed, papercraft, cardboard}, vehicles × realistic, figurines × {sculptural, collectible}, furniture × flat-pack — asserts no geometry failures, non-empty files, every STL re-parses, ZIP integrity;

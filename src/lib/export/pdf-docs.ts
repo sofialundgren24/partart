@@ -134,3 +134,80 @@ export async function textPdf(title: string, sections: { heading: string; lines:
   }
   return Buffer.from(await pdf.save());
 }
+
+
+// ---------------- build catalogue ----------------
+
+export interface CatalogPart {
+  partId: string; name: string; method: string; material: string; materialSwatch: string; paint: { name: string; hex: string } | null;
+  finish: string; glue: string[]; files: string[]; size: string; notes: string[]; render: RenderItem[];
+}
+export interface CatalogGroup { heading: string; items: { name: string; spec: string; quantity: string; swatch?: string; usedFor: string[] }[] }
+
+function drawRenderBox(page: PDFPage, items: RenderItem[], x: number, yTop: number, w: number, h: number) {
+  const { tris, bounds } = project(items);
+  const bw = bounds.maxX - bounds.minX || 1, bh = bounds.maxY - bounds.minY || 1;
+  const sc = Math.min(w / bw, h / bh);
+  const ox = x + (w - bw * sc) / 2 - bounds.minX * sc;
+  const top = yTop - (h - bh * sc) / 2;
+  for (const t of tris) {
+    const d = t.pts.map((p, i) => `${i ? "L" : "M"}${(p[0] * sc + ox - x).toFixed(1)} ${((p[1] - bounds.minY) * sc).toFixed(1)}`).join(" ") + " Z";
+    const c = hex(t.fill);
+    page.drawSvgPath(d, { x, y: top, color: rgb(c[0], c[1], c[2]), opacity: t.opacity });
+  }
+}
+
+/** "Build catalogue": everything to buy (with colour swatches), then one entry per part with a render. */
+export async function catalogPdf(opts: { title: string; cover: RenderItem[]; groups: CatalogGroup[]; parts: CatalogPart[] }): Promise<Buffer> {
+  const pdf = await PDFDocument.create();
+  pdf.setTitle(safe(opts.title + " - build catalogue"));
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const w = new Writer(pdf, font, bold, opts.title + " - build catalogue");
+  w.newPage();
+  w.h1(opts.title);
+  w.p("Build catalogue: every material, colour, adhesive and part, with how each part is made. Part IDs match the files, sheet labels and the 3D viewer.", 10);
+  w.drawRender(opts.cover, 380);
+  for (const g of opts.groups) {
+    if (!g.items.length) continue;
+    w.ensure(60);
+    w.h2(g.heading);
+    for (const it of g.items) {
+      w.ensure(30);
+      if (it.swatch) {
+        const c = hex(it.swatch);
+        w.page.drawRectangle({ x: 40, y: w.y - 14, width: 14, height: 14, color: rgb(c[0], c[1], c[2]), borderColor: INK, borderWidth: 0.8 });
+      }
+      w.page.drawText(safe(it.name), { x: 60, y: w.y - 10, size: 10, font: bold, color: INK });
+      w.y -= 14;
+      w.p(`${it.spec} - qty ${it.quantity}${it.usedFor.length ? ` - for ${it.usedFor.slice(0, 10).join(", ")}${it.usedFor.length > 10 ? "..." : ""}` : ""}`, 8, 20);
+      w.gap(2);
+    }
+  }
+  w.newPage();
+  w.h2("Every part");
+  for (const part of opts.parts) {
+    w.ensure(108);
+    const top = w.y;
+    w.page.drawRectangle({ x: 40, y: top - 100, width: 100, height: 96, color: rgb(1, 0.98, 0.94), borderColor: rgb(0.8, 0.75, 0.7), borderWidth: 0.5 });
+    if (part.render.length) drawRenderBox(w.page, part.render, 44, top - 6, 92, 88);
+    let y = top - 12;
+    const line = (t: string, size = 8, f = font) => { w.page.drawText(safe(t).slice(0, 110), { x: 152, y, size, font: f, color: INK }); y -= size + 3; };
+    line(`${part.partId}  ${part.name}`, 11, bold);
+    line(`${part.method} - ${part.material} - ${part.size}`);
+    const sw = hex(part.materialSwatch);
+    w.page.drawRectangle({ x: 152, y: y - 1, width: 9, height: 9, color: rgb(sw[0], sw[1], sw[2]), borderColor: INK, borderWidth: 0.5 });
+    w.page.drawText(safe(`material`), { x: 164, y, size: 8, font, color: INK });
+    if (part.paint) {
+      const pc = hex(part.paint.hex);
+      w.page.drawRectangle({ x: 210, y: y - 1, width: 9, height: 9, color: rgb(pc[0], pc[1], pc[2]), borderColor: INK, borderWidth: 0.5 });
+      w.page.drawText(safe(`paint: ${part.paint.name} (${part.paint.hex})`), { x: 222, y, size: 8, font, color: INK });
+    } else w.page.drawText(safe(part.finish), { x: 210, y, size: 8, font, color: INK });
+    y -= 11;
+    if (part.glue.length) line(`Glue: ${part.glue.join(", ")}`);
+    if (part.files.length) line(`Files: ${part.files.slice(0, 4).join(", ")}${part.files.length > 4 ? ` +${part.files.length - 4}` : ""}`);
+    for (const n of part.notes.slice(0, 3)) line(n, 7);
+    w.y = Math.min(top - 108, y - 4);
+  }
+  return Buffer.from(await pdf.save());
+}

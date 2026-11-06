@@ -18,28 +18,34 @@ function escXml(s: string) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/**
+ * Sheet SVG, ready for Inkscape (and LightBurn / xTool): real mm document size, Inkscape layers CUT / SCORE /
+ * ENGRAVE (each with its colour), and inside every layer one named group per part (Objects panel shows
+ * "C-BODY-01-P03 · Main walls — front wall"), so a part can be selected, moved or hidden as a unit.
+ */
 export function sheetSvg(layout: SheetLayout, sheetIndex: number, opts: { title: string; forPrint?: boolean }): string {
   const s = layout.sheets[sheetIndex];
   const W = layout.sheetW, H = layout.sheetH;
   const sw = opts.forPrint ? 0.3 : 0.01; // hairline for lasers; visible weight for paper printing
   const out: string[] = [];
+  const label = (pn: { panelId: string; label: string }) => escXml(`${pn.panelId} · ${pn.label}`);
   out.push(`<?xml version="1.0" encoding="UTF-8"?>`);
-  out.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}mm" height="${H}mm" viewBox="0 0 ${W} ${H}">`);
+  out.push(`<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd" width="${W}mm" height="${H}mm" viewBox="0 0 ${W} ${H}" version="1.1">`);
+  out.push(`<sodipodi:namedview id="namedview" inkscape:document-units="mm" showgrid="false"/>`);
   out.push(`<title>${escXml(opts.title)}</title>`);
-  out.push(`<desc>PARTART sheet ${sheetIndex + 1}/${layout.sheets.length} — ${escXml(layout.materialKey)} ${layout.thicknessMm} mm — kerf compensation ${layout.kerfMm} mm applied — units mm</desc>`);
-  out.push(`<g id="CUT" fill="none" stroke="${COL.CUT}" stroke-width="${sw}">`);
-  for (const p of s.placed) {
-    out.push(`<path data-panel="${p.panel.panelId}" d="${p.cut.map((c) => pathD(c, true)).join(" ")}"/>`);
-  }
+  out.push(`<desc>PARTART sheet ${sheetIndex + 1}/${layout.sheets.length} — ${escXml(layout.materialKey)} ${layout.thicknessMm} mm — kerf compensation ${layout.kerfMm} mm applied — units mm. Layers: CUT (red, cut through), SCORE (green, score/fold), ENGRAVE (blue, line engrave: labels, cladding, alignment).</desc>`);
+  out.push(`<g id="CUT" inkscape:groupmode="layer" inkscape:label="CUT (red — cut through)" fill="none" stroke="${COL.CUT}" stroke-width="${sw}">`);
+  for (const p of s.placed)
+    out.push(`<g id="cut-${p.panel.panelId}" inkscape:label="${label(p.panel)}"><path data-panel="${p.panel.panelId}" d="${p.cut.map((c) => pathD(c, true)).join(" ")}"/></g>`);
   out.push(`</g>`);
-  out.push(`<g id="SCORE" fill="none" stroke="${COL.SCORE}" stroke-width="${sw}"${opts.forPrint ? ` stroke-dasharray="2 1.5"` : ""}>`);
-  for (const p of s.placed) for (const l of p.score) out.push(`<path d="${pathD(l, false)}"/>`);
+  out.push(`<g id="SCORE" inkscape:groupmode="layer" inkscape:label="SCORE (green — score / fold)" fill="none" stroke="${COL.SCORE}" stroke-width="${sw}"${opts.forPrint ? ` stroke-dasharray="2 1.5"` : ""}>`);
+  for (const p of s.placed) if (p.score.length) out.push(`<g id="score-${p.panel.panelId}" inkscape:label="${label(p.panel)}">${p.score.map((l) => `<path d="${pathD(l, false)}"/>`).join("")}</g>`);
   out.push(`</g>`);
-  out.push(`<g id="ENGRAVE" fill="none" stroke="${COL.ENGRAVE}" stroke-width="${sw}">`);
+  out.push(`<g id="ENGRAVE" inkscape:groupmode="layer" inkscape:label="ENGRAVE (blue — line engrave)" fill="none" stroke="${COL.ENGRAVE}" stroke-width="${sw}">`);
   for (const p of s.placed) {
-    for (const l of p.engrave) out.push(`<path d="${pathD(l, false)}"/>`);
-    for (const t of p.text)
-      out.push(`<text x="${t.at[0].toFixed(2)}" y="${t.at[1].toFixed(2)}" font-family="Arial, Helvetica, sans-serif" font-size="${t.size}" text-anchor="middle" fill="${COL.ENGRAVE}" stroke="none">${escXml(t.text)}</text>`);
+    const lines = p.engrave.map((l) => `<path d="${pathD(l, false)}"/>`).join("");
+    const texts = p.text.map((t) => `<text x="${t.at[0].toFixed(2)}" y="${t.at[1].toFixed(2)}" font-family="Arial, Helvetica, sans-serif" font-size="${t.size}" text-anchor="middle" fill="${COL.ENGRAVE}" stroke="none">${escXml(t.text)}</text>`).join("");
+    if (lines || texts) out.push(`<g id="engrave-${p.panel.panelId}" inkscape:label="${label(p.panel)}">${lines}${texts}</g>`);
   }
   out.push(`</g>`);
   out.push(`</svg>`);

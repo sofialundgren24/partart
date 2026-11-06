@@ -69,7 +69,7 @@ export const templateProvider: AnalysisProvider = {
   id: "template",
   available: () => true,
   async analyse(input) {
-    const t = templateFor(input.categoryHint);
+    const t = templateFor(input.categoryHint, `${input.description} ${input.intent}`);
     return {
       provider: "template",
       model: null,
@@ -99,18 +99,25 @@ export const templateProvider: AnalysisProvider = {
 // ---------------- Claude vision provider ----------------
 
 const PrimitiveOut = z.object({
-  type: z.enum(["box", "gable", "wedge", "cylinder", "ellipsoid"]),
-  w: z.number().describe("box/gable/wedge/ellipsoid: size along X in mm; 0 for cylinder"),
-  d: z.number().describe("size along Y in mm; 0 for cylinder"),
+  type: z.enum(["box", "gable", "hip", "wedge", "ngon", "pyramid", "stairs", "railing", "ornament", "cylinder", "ellipsoid"]),
+  w: z.number().describe("size along local X in mm (box, gable = ridge length, hip, wedge, stairs, railing, ornament, ellipsoid); 0 if unused"),
+  d: z.number().describe("size along local Y in mm (gable = span across the ridge; railing/ornament = thickness); 0 if unused"),
   h: z.number().describe("height along Z in mm"),
-  r: z.number().describe("cylinder bottom radius in mm; 0 otherwise"),
-  rTop: z.number().describe("cylinder top radius in mm (equal to r for a straight cylinder); 0 otherwise"),
+  r: z.number().describe("cylinder bottom radius, or circumradius of ngon/pyramid, in mm; 0 if unused"),
+  rTop: z.number().describe("cylinder top radius (equal to r for straight); 0 if unused"),
+  n: z.number().describe("number of sides for ngon/pyramid (turret = 6 or 8); 0 if unused"),
+  steps: z.number().describe("number of steps for stairs; 0 if unused"),
+  arch: z.enum(["none", "round", "pointed"]).describe("opening top shape (role opening only)"),
+  gridCols: z.number().describe("window muntin columns (1 = none)"),
+  gridRows: z.number().describe("window muntin rows (1 = none)"),
+  cladding: z.enum(["none", "clapboard", "shingle", "fishscale", "stone", "brick", "boardbatten"]).describe("surface pattern on walls/roofs"),
+  ornamentKind: z.enum(["none", "bracket", "spandrel", "gablefan", "cresting", "finial"]).describe("for type ornament"),
 });
 
 const ComponentOut = z.object({
   partId: z.string().describe("Persistent ID like C-ROOF-01, C-WIN-03: 'C-' + short uppercase role code + '-' + two digits"),
   name: z.string(),
-  role: z.enum(["base", "structure", "shell", "roof", "opening", "detail", "joint", "wheel", "axle", "head", "torso", "limb", "hand", "foot", "accessory"]),
+  role: z.enum(["base", "structure", "shell", "roof", "opening", "detail", "joint", "wheel", "axle", "head", "torso", "limb", "hand", "foot", "accessory", "column", "railing", "stairs", "ornament", "chimney"]),
   parentPartId: z.string().nullable(),
   primitive: PrimitiveOut,
   position: z.array(z.number()).describe("[x, y, z] mm of the primitive's base centre. Z up, origin at the centre of the object's base, -Y is the front."),
@@ -143,13 +150,15 @@ const AnalysisOut = z.object({
 type AnalysisOutT = z.infer<typeof AnalysisOut>;
 
 const SYSTEM = `You are the object-analysis stage of PARTART, a tool that turns a photo of a physical object into a buildable model kit.
-Decompose the object into a hierarchy of physical components that a maker could build separately, and approximate each with ONE primitive (box, gable = triangular prism with ridge along X, wedge = ramp, cylinder/cone, ellipsoid).
+Decompose the object into a hierarchy of physical components that a maker could build separately, and approximate each with ONE primitive:
+box, gable (triangular prism, ridge along local X, span d), hip (hip roof), wedge (shed/ramp, high at -Y), ngon (n-sided tower, flat face to -Y), pyramid (n-sided spire), stairs (rising to +Y), railing (flat balustrade in the XZ plane), ornament (flat gingerbread trim in the XZ plane: bracket, spandrel/frieze, gablefan, cresting; or a turned finial), cylinder/cone, ellipsoid.
+For buildings think like an architectural model maker: separate volumes for the main block, wings, bays and towers (shell role), each roof plane system as its own roof component (cross gables are gables rotated [0,0,90]; turret spires are pyramids), porch roof, posts (column), railings, steps, chimneys, the foundation (base, stone cladding), and decorative trim. Give each wall/roof its cladding (clapboard, shingle, fishscale, stone, brick, boardbatten). Overlapping volumes are fine: the earlier/ancestor part keeps its shape and later parts are trimmed to it automatically, so list main volumes first.
 Rules:
 - Work in millimetres in a shared coordinate system: Z up, origin at the centre of the object's base, the object's front faces -Y. Position = base centre of the primitive (primitives rest on their local z = 0 and are centred on X/Y).
 - Give dimensions for the REAL object (estimate its real size from cues such as doors, people, wheels); PARTART rescales to the user's target size.
 - Be honest about evidence: mark each component observed / inferred / assumed and give a confidence. Never claim exactness from a single view.
-- Openings (windows, doors) are role "opening": thin boxes (d ≈ 3) positioned on the outer face of their parent wall, parented to it, with rotation [0,0,90] for openings on side (±X) walls.
-- Include repeated elements individually (each window its own component) up to about 40 components; summarise further repetition in "repeated".
+- Openings (windows, doors) are role "opening": thin boxes (d ≈ 3) with arch (none/round/pointed) and muntin grid, positioned on the OUTER face of their parent (wall box, tower face or gable end), parented to it. Rotation rz turns local -Y to face outward: 0 = front (-Y), 90 = right (+X), -90 = left (-X), 180 = back, ±45 etc. for tower faces.
+- Include repeated elements individually (each window, post and railing its own component) up to about 70 components; summarise further repetition in "repeated".
 - Parents must be listed components or null. Part IDs must be unique.
 - List what is genuinely uncertain, and which additional photo views or measurements would materially improve the result. Do not request views that would not change the model.`;
 
@@ -207,9 +216,23 @@ function normaliseClaude(out: AnalysisOutT, model: string): AnalysisResult {
     const pos = (c.position.length === 3 ? c.position : [0, 0, 0]) as Vec3;
     const rot = (c.rotation.length === 3 ? c.rotation : [0, 0, 0]) as Vec3;
     const pos1 = (v: number, f = 1) => (Number.isFinite(v) && v > 0 ? v : f);
+    const clad = p.cladding !== "none" ? { cladding: p.cladding } : {};
+    const int = (v: number, lo: number, hi: number, f: number) => (Number.isFinite(v) && v >= lo ? Math.min(hi, Math.round(v)) : f);
     let prim: Primitive;
-    if (p.type === "cylinder") prim = { type: "cylinder", r: pos1(p.r, 5), rTop: p.rTop > 0 && Math.abs(p.rTop - p.r) > 1e-3 ? p.rTop : undefined, h: pos1(p.h) };
-    else prim = { type: p.type, w: pos1(p.w), d: pos1(p.d), h: pos1(p.h) };
+    switch (p.type) {
+      case "cylinder": prim = { type: "cylinder", r: pos1(p.r, 5), rTop: p.rTop > 0 && Math.abs(p.rTop - p.r) > 1e-3 ? p.rTop : undefined, h: pos1(p.h) }; break;
+      case "ngon": case "pyramid": prim = { type: p.type, n: int(p.n, 3, 24, 8), r: pos1(p.r, pos1(p.w, 20) / 2), h: pos1(p.h), ...clad }; break;
+      case "stairs": prim = { type: "stairs", w: pos1(p.w), d: pos1(p.d), h: pos1(p.h), steps: int(p.steps, 1, 40, 3) }; break;
+      case "railing": prim = { type: "railing", w: pos1(p.w), h: pos1(p.h), d: pos1(p.d, 2) }; break;
+      case "ornament": prim = { type: "ornament", kind: p.ornamentKind === "none" ? "bracket" : p.ornamentKind, w: pos1(p.w), h: pos1(p.h), d: pos1(p.d, 1.5) }; break;
+      case "box": prim = {
+        type: "box", w: pos1(p.w), d: pos1(p.d), h: pos1(p.h), ...clad,
+        ...(c.role === "opening" && p.arch !== "none" ? { arch: p.arch } : {}),
+        ...(c.role === "opening" && (p.gridCols > 1 || p.gridRows > 1) ? { grid: [int(p.gridCols, 1, 8, 1), int(p.gridRows, 1, 8, 1)] as [number, number] } : {}),
+      }; break;
+      case "ellipsoid": prim = { type: "ellipsoid", w: pos1(p.w), d: pos1(p.d), h: pos1(p.h) }; break;
+      default: prim = { type: p.type, w: pos1(p.w), d: pos1(p.d), h: pos1(p.h), ...clad };
+    }
     comps.push({
       partId: id, name: c.name, role: c.role, parentPartId: c.parentPartId, primitive: prim, position: pos, rotation: rot,
       colorHex: /^#[0-9a-fA-F]{6}$/.test(c.colorHex) ? c.colorHex.toLowerCase() : "#d8c7a8",

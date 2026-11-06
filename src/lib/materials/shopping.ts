@@ -12,7 +12,8 @@ import { primitiveSize } from "../geometry/types";
 export interface ShoppingItem {
   key: string;
   name: string;
-  category: "sheet" | "filament" | "paper" | "clay" | "fabric" | "hardware" | "adhesive" | "finishing" | "tool";
+  category: "sheet" | "filament" | "paper" | "clay" | "fabric" | "hardware" | "adhesive" | "finishing" | "tool" | "wood" | "metal" | "paint" | "lighting";
+  swatch?: string;
   spec: string;
   quantity: string;
   usedFor: string[]; // partIds
@@ -37,6 +38,9 @@ export function buildShoppingList(opts: {
   steps: AssemblyStepDef[];
   dowelStacks: { partId: string; heightMm: number }[];
   finish: string;
+  paints?: { partId: string; paint: { key: string; name: string; hex: string } }[];
+  glazedOpenings?: string[];
+  ornaments?: string[];
 }): ShoppingList {
   const items: ShoppingItem[] = [];
   const sup = (cat: string) => suppliersFor(opts.region, cat);
@@ -85,6 +89,7 @@ export function buildShoppingList(opts: {
       key: `${e.key}-${e.color}`,
       name: `${m.name} — colour ${e.color}`,
       category: "filament",
+      swatch: e.color,
       spec: isResin ? "Resin, colour of choice" : "1.75 mm diameter (check your printer)",
       quantity: isResin
         ? `≈ ${Math.ceil(withMargin)} g → 1 × 500 g / 1 kg bottle`
@@ -101,6 +106,16 @@ export function buildShoppingList(opts: {
     const m = material(part.materialKey);
     const s = primitiveSize(part.comp.primitive);
     const volCm3 = (s[0] * s[1] * s[2] * 0.52) / 1000; // ellipsoid-ish fill of the bounding box
+    if (m.kind === "wood" || m.kind === "metal") {
+      const p = part.comp.primitive;
+      const dia = p.type === "cylinder" ? `Ø${(2 * p.r).toFixed(1)} mm` : `${s[0].toFixed(1)} × ${s[1].toFixed(1)} mm section`;
+      items.push({
+        key: `${part.materialKey}-${part.comp.partId}`, name: `${m.name} ${dia}`, category: m.kind === "wood" ? "wood" : "metal", swatch: m.colorHex,
+        spec: `${dia}, cut to ${s[2].toFixed(1)} mm for ${part.comp.name}`, quantity: `${s[2].toFixed(0)} mm (+ 50 mm spare)`, usedFor: [part.comp.partId],
+        basis: "Length from the part height; diameter from the modelled post.", alternatives: m.kind === "wood" ? ["3D-print the post instead (Design → method: 3D print)"] : ["Birch dowel of the same diameter"], tier: "minimum", suppliers: sup(m.kind === "wood" ? "wood" : "craft"),
+      });
+      continue;
+    }
     items.push({
       key: `${part.materialKey}-${part.comp.partId}`, name: m.name, category: m.kind === "clay" ? "clay" : m.kind === "fabric" ? "fabric" : "finishing",
       spec: `For ${part.comp.name}: ${s.map((x) => x.toFixed(0)).join(" × ")} mm`, quantity: m.kind === "clay" ? `≈ ${Math.ceil(volCm3 * 1.7)} g (density ≈ 1.7 g/cm³)` : "as required",
@@ -118,6 +133,29 @@ export function buildShoppingList(opts: {
   const glues = new Map<string, string[]>();
   for (const s of opts.steps) for (const a of s.adhesives) glues.set(a, [...(glues.get(a) ?? []), ...s.partIds]);
   for (const [g, parts] of glues) items.push({ key: `glue-${g}`, name: g, category: "adhesive", spec: "Small bottle/tube", quantity: "1", usedFor: Array.from(new Set(parts)), basis: "Chosen from the materials that meet at each joint.", alternatives: [], tier: "minimum", suppliers: sup("craft") });
+
+  // Paints: one entry per colour, listing the parts it is for.
+  const byPaint = new Map<string, { paint: { key: string; name: string; hex: string }; parts: string[] }>();
+  for (const p of opts.paints ?? []) {
+    const e = byPaint.get(p.paint.key) ?? { paint: p.paint, parts: [] };
+    e.parts.push(p.partId);
+    byPaint.set(p.paint.key, e);
+  }
+  for (const { paint, parts } of byPaint.values())
+    items.push({
+      key: `paint-${paint.key}`, name: `Acrylic paint — ${paint.name}`, category: "paint", swatch: paint.hex, spec: `Colour close to ${paint.hex} (matched from your reference)`,
+      quantity: parts.length > 6 ? "1 × 60 ml" : "1 × 20 ml", usedFor: parts, basis: "Nearest standard hobby colour to each part's colour in the analysis.",
+      alternatives: ["Print in a filament of this colour and skip painting"], tier: opts.finish === "painted" ? "minimum" : "recommended", suppliers: sup("craft"),
+    });
+  if (byPaint.size) items.push({ key: "primer", name: "Primer (grey or white, spray or brush)", category: "paint", swatch: "#b9b9b5", spec: "Acrylic primer for plastic and wood", quantity: "1", usedFor: [], basis: "Painted parts need a primer coat for adhesion.", alternatives: [], tier: opts.finish === "painted" ? "minimum" : "recommended", suppliers: sup("craft") });
+  if ((opts.glazedOpenings ?? []).length)
+    items.push({
+      key: "led", name: "Warm-white LED micro fairy lights (battery box)", category: "lighting", swatch: "#ffd98a", spec: "Copper-wire 'micro' string, warm white (≈2700 K), battery or USB powered",
+      quantity: `1 string of ≥ ${opts.glazedOpenings!.length} LEDs (≈ 1 m)`, usedFor: opts.glazedOpenings!, basis: "One LED behind each glazed window/door; route the wire through a 4 mm hole in the floor.",
+      alternatives: ["A single USB LED puck under an open floor"], tier: "recommended", suppliers: [],
+    });
+  if ((opts.ornaments ?? []).length)
+    items.push({ key: "brass-wire", name: "Brass wire Ø0.8–1 mm", category: "metal", swatch: "#c9a24a", spec: "Straight lengths", quantity: "≈ 300 mm", usedFor: opts.ornaments!, basis: "Spikes for finials/cresting and pins to reinforce delicate trim.", alternatives: ["Steel pins with the heads cut off"], tier: "recommended", suppliers: sup("craft") });
 
   items.push({ key: "sandpaper", name: "Sandpaper assortment", category: "finishing", spec: "180 / 240 / 400 grit", quantity: "1 pack", usedFor: [], basis: "Clean-up of cut edges and printed contact faces.", alternatives: [], tier: "recommended", suppliers: sup("craft") });
   if (opts.finish === "painted") items.push({ key: "paint", name: "Acrylic paints + primer", category: "finishing", spec: "Colours as in the design palette", quantity: "1 set", usedFor: [], basis: "Painted finish selected.", alternatives: ["Spray primer for printed parts"], tier: "recommended", suppliers: sup("craft") });

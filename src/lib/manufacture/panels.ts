@@ -10,7 +10,8 @@
 import type { ManifoldToplevel, Mat4, SimplePolygon } from "manifold-3d";
 import type { CrossSection, Manifold } from "../geometry/kernel";
 import { toLocal } from "../geometry/transform";
-import { isDoor, primitiveSize, type ComponentSpec, type Vec3 } from "../geometry/types";
+import { isDoor, primitiveSize, type Cladding, type ComponentSpec, type OrnamentKind, type Vec3 } from "../geometry/types";
+import { finialHalf, frameSection, ngonPoints, openingSection, ornamentSection, railingSection } from "../geometry/profiles";
 import { material } from "../materials/catalog";
 import type { ResolvedPart } from "./resolve";
 import { FRAME } from "./print";
@@ -33,6 +34,8 @@ export interface Panel {
   /** Panel-plane → component-local placement: origin + u, v axes + thickness direction. Null for nets (folded). */
   place: { origin: Vec3; u: Vec3; v: Vec3; w: Vec3 } | null;
   notes: string[];
+  /** Surface pattern engraved on the outer (+w, top-of-sheet) face, added after trimming. */
+  cladding?: Cladding;
 }
 
 export interface PanelResult {
@@ -47,6 +50,10 @@ export interface PanelContext {
   openingsOf: (partId: string) => ResolvedPart[];
   /** false = butt joints everywhere ("easy" difficulty / hand cutting). */
   fingers?: boolean;
+  /** Sheet used for window frames that accompany glazed panes (null = no frame). */
+  frameMaterial?: { key: string; t: number } | null;
+  /** Sheet/wall thickness of a part (used to seat panes behind their wall). */
+  parentThickness?: (partId: string) => number;
 }
 
 const OVERLAP = 3; // pane overlap beyond the wall opening on each side (mm)
@@ -80,24 +87,54 @@ export function panelsFor(ctx: PanelContext, part: ResolvedPart): PanelResult {
   const p = c.primitive;
 
   if (c.role === "opening" && p.type === "box") return openingPanels(ctx, part, t, method);
-  if (method === "paper") return paperNet(ctx, part, t);
+  if (method === "paper" && (p.type === "box" || p.type === "gable" || p.type === "cylinder" || p.type === "ngon" || p.type === "pyramid")) return paperNet(ctx, part, t);
 
   const size = primitiveSize(p);
+  const clad = "cladding" in p ? p.cladding : undefined;
+  let r: PanelResult;
   switch (p.type) {
     case "box": {
-      if (Math.min(...size) < 3 * t || Math.min(p.w, p.d) < 6 * t) return layeredBox(ctx, part, t, method);
-      return boxPanels(ctx, part, t, method, method === "laser" && ctx.fingers !== false);
+      if (Math.min(...size) < 3 * t || Math.min(p.w, p.d) < 6 * t) r = layeredBox(ctx, part, t, method);
+      else r = boxPanels(ctx, part, t, method, method === "laser" && ctx.fingers !== false);
+      break;
     }
-    case "gable":
-      return gablePanels(ctx, part, t, method);
-    case "wedge":
-      return wedgePanels(ctx, part, t, method);
+    case "gable": r = gablePanels(ctx, part, t, method); break;
+    case "wedge": r = wedgePanels(ctx, part, t, method); break;
+    case "hip": {
+      const rr = Math.abs(p.w - p.d) / 2;
+      const c0: Vec3 = [-p.w / 2, -p.d / 2, 0], c1: Vec3 = [p.w / 2, -p.d / 2, 0], c2: Vec3 = [p.w / 2, p.d / 2, 0], c3: Vec3 = [-p.w / 2, p.d / 2, 0];
+      const faces: Vec3[][] = p.w >= p.d
+        ? [[c0, c1, [rr, 0, p.h], [-rr, 0, p.h]], [c1, c2, [rr, 0, p.h]], [c2, c3, [-rr, 0, p.h], [rr, 0, p.h]], [c3, c0, [-rr, 0, p.h]]]
+        : [[c0, c1, [0, -rr, p.h]], [c1, c2, [0, rr, p.h], [0, -rr, p.h]], [c2, c3, [0, rr, p.h]], [c3, c0, [0, -rr, p.h], [0, rr, p.h]]];
+      r = facePanels(ctx, part, t, method, faces, ["front slope", "right hip", "back slope", "left hip"]);
+      r.notes.push("Hip roof: the four slopes meet at hips — sand a bevel on the meeting edges or cover them with thin hip strips.");
+      break;
+    }
+    case "pyramid": {
+      const P = ngonPoints(p.n, p.r);
+      const faces: Vec3[][] = P.map((a, k) => [[a[0], a[1], 0], [P[(k + 1) % p.n][0], P[(k + 1) % p.n][1], 0], [0, 0, p.h]] as Vec3[]);
+      r = facePanels(ctx, part, t, method, faces, P.map((_, k) => `face ${k + 1}/${p.n}`));
+      const pitch = (Math.atan2(p.h, p.r * Math.cos(Math.PI / p.n)) * 180) / Math.PI;
+      r.notes.push(`${p.n}-sided spire (pitch ${pitch.toFixed(0)}°): tape the triangles edge to edge on the outside, fold into shape and glue from inside; sand a small bevel where they meet.`);
+      break;
+    }
+    case "ngon": r = ngonPanels(ctx, part, t, method); break;
+    case "stairs": r = stairsPanels(ctx, part, t, method); break;
+    case "railing":
+      r = flatPiece(ctx, part, t, method, railingSection(ctx.wasm, p.w, p.h), "railing");
+      r.notes.push("One-piece fretwork railing: glue it between the posts with the bottom rail on the floor.");
+      break;
+    case "ornament":
+      r = p.kind === "finial" ? finialPanels(ctx, part, t, method) : flatPiece(ctx, part, t, method, ornamentSection(ctx.wasm, p.kind as OrnamentKind, p.w, p.h), p.kind);
+      break;
     case "cylinder":
     case "ellipsoid":
-      return layeredRound(ctx, part, t, method);
+      r = layeredRound(ctx, part, t, method); break;
     case "mesh":
       return { panels: [], notes: [], warnings: [`${c.partId}: imported meshes cannot be converted to flat sheet parts yet — assign 3D printing instead.`] };
   }
+  if (clad && clad !== "none") for (const pn of r.panels) if (pn.cladding === undefined) pn.cladding = clad;
+  return r;
 }
 
 // ---------------- box: finger-jointed walls + floor ----------------
@@ -140,12 +177,12 @@ function boxPanels(ctx: PanelContext, part: ResolvedPart, t: number, method: Pan
 
   type WallDef = { name: string; len: number; keepEven: boolean; origin: Vec3; u: Vec3; w: Vec3; face: "front" | "back" | "left" | "right" };
   const walls: WallDef[] = [
-    { name: "front wall", len: w, keepEven: true, origin: [-w / 2, -d / 2, t], u: [1, 0, 0], w: [0, 1, 0], face: "front" },
+    // Outer face is +w (the face that is up on the sheet), so engraved cladding ends up outside.
+    { name: "front wall", len: w, keepEven: true, origin: [-w / 2, -d / 2 + t, t], u: [1, 0, 0], w: [0, -1, 0], face: "front" },
     { name: "back wall", len: w, keepEven: true, origin: [-w / 2, d / 2 - t, t], u: [1, 0, 0], w: [0, 1, 0], face: "back" },
-    { name: "left wall", len: d, keepEven: false, origin: [-w / 2, -d / 2, t], u: [0, 1, 0], w: [1, 0, 0], face: "left" },
+    { name: "left wall", len: d, keepEven: false, origin: [-w / 2 + t, -d / 2, t], u: [0, 1, 0], w: [-1, 0, 0], face: "left" },
     { name: "right wall", len: d, keepEven: false, origin: [w / 2 - t, -d / 2, t], u: [0, 1, 0], w: [1, 0, 0], face: "right" },
   ];
-  const openings = ctx.openingsOf(c.partId);
   const panels: Panel[] = [];
   const floorSlots: Poly[] = [];
   for (const wd of walls) {
@@ -162,13 +199,7 @@ function boxPanels(ctx: PanelContext, part: ResolvedPart, t: number, method: Pan
       if (wd.face === "left") floorSlots.push(rect(0, cx - half, t, cx + half));
       if (wd.face === "right") floorSlots.push(rect(w - t, cx - half, w, cx + half));
     }
-    // Openings that sit on this face.
-    const holes: Poly[] = [];
-    for (const o of openings) {
-      const hole = openingOnFace(c, o.comp, wd.face, t);
-      if (hole) holes.push(hole);
-    }
-    if (holes.length) body = body.subtract(cs(wasm, holes));
+    // Openings are cut later in 3D (works for arches and for any parent shape).
     panels.push({
       panelId: pid(c.partId),
       partId: c.partId,
@@ -181,7 +212,7 @@ function boxPanels(ctx: PanelContext, part: ResolvedPart, t: number, method: Pan
       score: [],
       text: [{ at: [wd.len / 2, hw * 0.12 + 2], text: "", size: 3 }],
       place: { origin: wd.origin, u: wd.u, v: [0, 0, 1], w: wd.w },
-      notes: holes.length ? [`${holes.length} opening(s)`] : [],
+      notes: [],
     });
   }
   const plate = (name: string, z: number): Panel => {
@@ -201,6 +232,7 @@ function boxPanels(ctx: PanelContext, part: ResolvedPart, t: number, method: Pan
       text: [{ at: [w / 2, d / 2], text: "", size: 3 }],
       place: { origin: [-w / 2, -d / 2, z], u: [1, 0, 0], v: [0, 1, 0], w: [0, 0, 1] },
       notes: [],
+      cladding: "none",
     };
   };
   panels.push(plate("floor", 0));
@@ -238,31 +270,182 @@ function openingOnFace(box: ComponentSpec, op: ComponentSpec, face: "front" | "b
 function openingPanels(ctx: PanelContext, part: ResolvedPart, t: number, method: Panel["method"]): PanelResult {
   const { wasm } = ctx;
   const c = part.comp;
-  const p = c.primitive as { w: number; d: number; h: number };
+  const p = c.primitive as { w: number; d: number; h: number; arch?: string; grid?: [number, number] };
   const mat = material(part.materialKey);
   const door = isDoor(c);
   if (mat.transparent || door) {
-    const W = p.w + 2 * OVERLAP, H = p.h + 2 * OVERLAP;
+    // Pane / door leaf: the opening outline grown by the overlap, glued behind the wall (local +Y is inside).
+    const leaf = openingSection(wasm, p.w, p.h, p.arch).offset(OVERLAP, "Round", 2, 24);
+    const engrave: Poly[] = [];
+    if (door) {
+      // Raised-panel lines on the leaf (two panels), engraved on the visible face.
+      const iw = p.w * 0.34, x1 = -p.w * 0.06, x0 = -p.w * 0.4;
+      for (const [y0, y1] of [[p.h * 0.1, p.h * 0.42], [p.h * 0.5, p.h * 0.85]])
+        for (const xo of [x0, x1 + p.w * 0.12]) engrave.push([[xo, y0], [xo + iw, y0], [xo + iw, y1], [xo, y1], [xo, y0]]);
+    }
     return {
       panels: [{
         panelId: pid(c.partId), partId: c.partId, label: `${c.name} — ${door ? "door leaf" : "pane"}`, materialKey: part.materialKey, thicknessMm: t, method,
-        cut: cs(wasm, [rect(0, 0, W, H)]), engrave: [], score: [], text: [{ at: [W / 2, 2.5], text: c.partId, size: 2 }],
-        place: { origin: [-W / 2, p.d / 2, -OVERLAP], u: [1, 0, 0], v: [0, 0, 1], w: [0, 1, 0] },
-        notes: [`${door ? "Door leaf" : "Pane"}: glue behind the ${p.w.toFixed(1)} × ${p.h.toFixed(1)} mm opening; overlaps ${OVERLAP} mm on every side.`],
-      }],
+        cut: leaf, engrave, score: [], text: [{ at: [0, -OVERLAP + 1.5], text: c.partId, size: 1.6 }],
+        // Visible face (+w) looks out through the opening (-Y).
+        place: { origin: [0, (c.parentPartId && ctx.parentThickness ? ctx.parentThickness(c.parentPartId) : 3) + t, 0], u: [1, 0, 0], v: [0, 0, 1], w: [0, -1, 0] },
+        notes: [`${door ? "Door leaf" : "Pane"} ${p.arch && p.arch !== "none" ? `(${p.arch} arch) ` : ""}glued behind the ${p.w.toFixed(1)} × ${p.h.toFixed(1)} mm opening, ${OVERLAP} mm overlap all round.`],
+        cladding: "none",
+      }, ...(!door && ctx.frameMaterial ? [{
+        panelId: pid(c.partId), partId: c.partId, label: `${c.name} — frame`, materialKey: ctx.frameMaterial.key, thicknessMm: ctx.frameMaterial.t, method,
+        cut: frameSection(wasm, p.w, p.h, p.arch, FRAME.border, FRAME.lip, p.grid), engrave: [], score: [], text: [],
+        place: { origin: [0, 0, 0] as Vec3, u: [1, 0, 0] as Vec3, v: [0, 0, 1] as Vec3, w: [0, -1, 0] as Vec3 },
+        notes: ["Frame glued on the outside face around the opening (paint it before gluing)."], cladding: "none" as Cladding,
+      }] : [])],
       notes: [], warnings: [],
     };
   }
-  const W = p.w + 2 * FRAME.border, H = p.h + 2 * FRAME.border;
-  const body = cs(wasm, [rect(0, 0, W, H)]).subtract(cs(wasm, [rect(FRAME.border + FRAME.lip, FRAME.border + FRAME.lip, W - FRAME.border - FRAME.lip, H - FRAME.border - FRAME.lip)]));
+  const body = frameSection(wasm, p.w, p.h, p.arch, FRAME.border, FRAME.lip, p.grid);
   return {
     panels: [{
       panelId: pid(c.partId), partId: c.partId, label: `${c.name} — frame`, materialKey: part.materialKey, thicknessMm: t, method,
       cut: body, engrave: [], score: [], text: [],
-      place: { origin: [-W / 2, -p.d / 2 - t, -FRAME.border], u: [1, 0, 0], v: [0, 0, 1], w: [0, 1, 0] },
-      notes: [`Flat frame glued over the opening from outside; overlaps the hole by ${FRAME.lip} mm.`],
+      place: { origin: [0, -p.d / 2, 0], u: [1, 0, 0], v: [0, 0, 1], w: [0, -1, 0] },
+      notes: [`Frame${p.grid ? ` with ${p.grid[0]}×${p.grid[1]} muntins` : ""} glued over the opening from outside; overlaps the hole by ${FRAME.lip} mm.`],
+      cladding: "none",
     }],
     notes: [], warnings: [],
+  };
+}
+
+// ---------------- polyhedral faces (hip roofs, spires) ----------------
+
+function sub(a: Vec3, b: Vec3): Vec3 { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function dot3(a: Vec3, b: Vec3) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function cross3(a: Vec3, b: Vec3): Vec3 { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+function unit(a: Vec3): Vec3 { const l = Math.hypot(...a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+
+/**
+ * One flat panel per outer face. Each face is given counter-clockwise as seen from outside, starting with its
+ * bottom edge, so u runs left→right along the eave and v points up the slope. The outer face (+w) lies on the
+ * modelled surface.
+ */
+function facePanels(ctx: PanelContext, part: ResolvedPart, t: number, method: Panel["method"], faces: Vec3[][], names: string[]): PanelResult {
+  const c = part.comp;
+  const panels: Panel[] = [];
+  faces.forEach((f, i) => {
+    const u = unit(sub(f[1], f[0]));
+    const n = unit(cross3(sub(f[1], f[0]), sub(f[f.length - 1], f[0])));
+    const v = cross3(n, u);
+    const poly: Poly = f.map((pt) => { const d = sub(pt, f[0]); return [dot3(d, u), dot3(d, v)] as Pt; });
+    const origin: Vec3 = [f[0][0] - n[0] * t, f[0][1] - n[1] * t, f[0][2] - n[2] * t];
+    const id = pid(c.partId);
+    const b = { x: poly.reduce((s, q) => s + q[0], 0) / poly.length, y: poly.reduce((s, q) => s + q[1], 0) / poly.length };
+    panels.push({
+      panelId: id, partId: c.partId, label: `${c.name} — ${names[i] ?? `face ${i + 1}`}`, materialKey: part.materialKey, thicknessMm: t, method,
+      cut: cs(ctx.wasm, [poly]), engrave: [], score: [], text: [{ at: [b.x, b.y * 0.6], text: id, size: 2.5 }],
+      place: { origin, u, v, w: n }, notes: [],
+    });
+  });
+  return { panels, notes: [], warnings: [] };
+}
+
+// ---------------- n-gon towers ----------------
+
+function ngonPanels(ctx: PanelContext, part: ResolvedPart, t: number, method: Panel["method"]): PanelResult {
+  const { wasm } = ctx;
+  const c = part.comp;
+  const p = c.primitive as { n: number; r: number; h: number };
+  const P = ngonPoints(p.n, p.r);
+  const side = 2 * p.r * Math.sin(Math.PI / p.n);
+  const closedTop = c.role !== "shell";
+  const hw = p.h - t - (closedTop ? t : 0);
+  const tw = Math.min(12, Math.max(3, side / 4));
+  const panels: Panel[] = [];
+  const slots: Poly[] = [];
+  for (let k = 0; k < p.n; k++) {
+    const a = P[k], b2 = P[(k + 1) % p.n];
+    const u = unit([b2[0] - a[0], b2[1] - a[1], 0]);
+    const n: Vec3 = [u[1], -u[0], 0]; // outward (polygon is CCW)
+    let body = cs(wasm, [rect(0, 0, side, hw)]);
+    const tabs: Poly[] = [rect(side / 2 - tw / 2, -t, side / 2 + tw / 2, 0.01)];
+    if (closedTop) tabs.push(rect(side / 2 - tw / 2, hw - 0.01, side / 2 + tw / 2, hw + t));
+    body = body.add(cs(wasm, tabs));
+    // Slot in the base/top plate under this wall's tab.
+    const mx = (a[0] + b2[0]) / 2 - n[0] * (t / 2), my = (a[1] + b2[1]) / 2 - n[1] * (t / 2);
+    const hx = (u[0] * tw) / 2, hy = (u[1] * tw) / 2, nx = (n[0] * t) / 2, ny = (n[1] * t) / 2;
+    slots.push([[mx - hx - nx, my - hy - ny], [mx + hx - nx, my + hy - ny], [mx + hx + nx, my + hy + ny], [mx - hx + nx, my - hy + ny]]);
+    const id = pid(c.partId);
+    panels.push({
+      panelId: id, partId: c.partId, label: `${c.name} — wall ${k + 1}/${p.n}`, materialKey: part.materialKey, thicknessMm: t, method,
+      cut: body, engrave: [], score: [], text: [{ at: [side / 2, Math.min(hw * 0.1 + 2, hw / 2)], text: id, size: Math.min(3, side / 8) }],
+      place: { origin: [a[0] - n[0] * t, a[1] - n[1] * t, t], u, v: [0, 0, 1], w: n }, notes: [],
+    });
+  }
+  const plate = (name: string, z: number): Panel => ({
+    panelId: pid(c.partId), partId: c.partId, label: `${c.name} — ${name}`, materialKey: part.materialKey, thicknessMm: t, method,
+    cut: cs(wasm, [P]).subtract(cs(wasm, slots)), engrave: [], score: [], text: [{ at: [0, 0], text: "", size: 3 }],
+    place: { origin: [0, 0, z], u: [1, 0, 0], v: [0, 1, 0], w: [0, 0, 1] }, notes: [], cladding: "none",
+  });
+  panels.push(plate("base plate", 0));
+  if (closedTop) panels.push(plate("top plate", p.h - t));
+  panels.forEach((pn) => { if (!pn.text[0].text) pn.text[0].text = pn.panelId; });
+  const bevel = 180 / p.n;
+  return {
+    panels,
+    notes: [`${p.n}-sided tower: each wall's tab drops into the base plate. Sand a ${bevel.toFixed(1)}° bevel on both vertical edges of every wall so neighbours meet cleanly (or fill the outside V-joints with filler).`],
+    warnings: side < 4 * t ? [`${c.partId}: tower faces are only ${side.toFixed(1)} mm wide for ${t} mm stock — consider printing it.`] : [],
+  };
+}
+
+// ---------------- stairs, flat pieces, finials ----------------
+
+function stairsPanels(ctx: PanelContext, part: ResolvedPart, t: number, method: Panel["method"]): PanelResult {
+  const c = part.comp;
+  const p = c.primitive as { w: number; d: number; h: number; steps: number };
+  const layers = Math.max(1, Math.round(p.h / t));
+  const panels: Panel[] = [];
+  for (let j = 0; j < layers; j++) {
+    const z = (j + 0.5) * (p.h / layers);
+    const i = Math.min(p.steps - 1, Math.floor((z * p.steps) / p.h));
+    const y0 = -p.d / 2 + (p.d * i) / p.steps;
+    const depth = p.d / 2 - y0;
+    const id = pid(c.partId);
+    panels.push({
+      panelId: id, partId: c.partId, label: `${c.name} — layer ${j + 1}/${layers}`, materialKey: part.materialKey, thicknessMm: t, method,
+      cut: cs(ctx.wasm, [rect(0, 0, p.w, depth)]), engrave: [], score: [], text: [{ at: [p.w / 2, depth / 2], text: id, size: Math.min(3, depth / 3) }],
+      place: { origin: [-p.w / 2, y0, j * t], u: [1, 0, 0], v: [0, 1, 0], w: [0, 0, 1] }, notes: [], cladding: "none",
+    });
+  }
+  return { panels, notes: [`Stairs: ${layers} stacked layers of ${t} mm forming ${p.steps} steps — glue from the bottom up, keeping the back edges flush.`], warnings: [] };
+}
+
+function flatPiece(ctx: PanelContext, part: ResolvedPart, t: number, method: Panel["method"], section: CrossSection, what: string): PanelResult {
+  const c = part.comp;
+  const b = section.bounds();
+  const id = pid(c.partId);
+  return {
+    panels: [{
+      panelId: id, partId: c.partId, label: `${c.name} — ${what}`, materialKey: part.materialKey, thicknessMm: t, method,
+      cut: section, engrave: [], score: [], text: [{ at: [(b.min[0] + b.max[0]) / 2, b.min[1] + 0.6], text: id, size: 1.4 }],
+      place: { origin: [0, t / 2, 0], u: [1, 0, 0], v: [0, 0, 1], w: [0, -1, 0] }, notes: [], cladding: "none",
+    }],
+    notes: [], warnings: [],
+  };
+}
+
+function finialPanels(ctx: PanelContext, part: ResolvedPart, t: number, method: Panel["method"]): PanelResult {
+  // Two identical silhouettes with half-height slots, slid together at 90° — a classic flat-pack finial.
+  const { wasm } = ctx;
+  const c = part.comp;
+  const p = c.primitive as { w: number; h: number };
+  const half = finialHalf(p.w, p.h);
+  const sil = cs(wasm, [half.concat(half.map(([x, y]) => [-x, y] as Pt).reverse())]);
+  const slotTop = sil.subtract(cs(wasm, [rect(-t / 2, p.h / 2, t / 2, p.h + 1)]));
+  const slotBottom = sil.subtract(cs(wasm, [rect(-t / 2, -1, t / 2, p.h / 2)]));
+  const mk = (cut: CrossSection, name: string, u: Vec3, w: Vec3): Panel => ({
+    panelId: pid(c.partId), partId: c.partId, label: `${c.name} — ${name}`, materialKey: part.materialKey, thicknessMm: t, method,
+    cut, engrave: [], score: [], text: [], place: { origin: [-w[0] * t / 2, -w[1] * t / 2, 0], u, v: [0, 0, 1], w }, notes: [], cladding: "none",
+  });
+  return {
+    panels: [mk(slotTop, "finial A (slot from top)", [1, 0, 0], [0, 1, 0]), mk(slotBottom, "finial B (slot from bottom)", [0, 1, 0], [-1, 0, 0])],
+    notes: ["Finial: slide A down onto B through the slots to make a cross-shaped finial; glue."],
+    warnings: [],
   };
 }
 
@@ -364,13 +547,15 @@ function gablePanels(ctx: PanelContext, part: ResolvedPart, t: number, method: P
   const panels: Panel[] = [];
   const warnings: string[] = [];
   if (apex <= t || d / 2 - inset <= t) warnings.push(`${c.partId}: roof is too shallow/small for ${t} mm sheet gables — consider printing it.`);
-  for (const [name, x] of [["gable end A", -w / 2], ["gable end B", w / 2 - t]] as const) {
+  const roofClad = (c.primitive as { cladding?: Cladding }).cladding;
+  const endClad: Cladding = roofClad && roofClad !== "none" ? "fishscale" : "none";
+  for (const [name, x, wx] of [["gable end A", -w / 2 + t, -1], ["gable end B", w / 2 - t, 1]] as const) {
     const id = pid(c.partId);
     const tri: Poly = [[inset, 0], [d - inset, 0], [d / 2, apex]];
     panels.push({
       panelId: id, partId: c.partId, label: `${c.name} — ${name}`, materialKey: part.materialKey, thicknessMm: t, method,
       cut: cs(wasm, [tri]), engrave: [], score: [], text: [{ at: [d / 2, apex * 0.3], text: id, size: 3 }],
-      place: { origin: [x, -d / 2, 0], u: [0, 1, 0], v: [0, 0, 1], w: [1, 0, 0] }, notes: [],
+      place: { origin: [x, -d / 2, 0], u: [0, 1, 0], v: [0, 0, 1], w: [wx, 0, 0] }, notes: [], cladding: endClad,
     });
   }
   // Roof slopes: outer face on the modelled roof surface. Engraved lines mark where the gable ends meet (underside).
@@ -381,15 +566,16 @@ function gablePanels(ctx: PanelContext, part: ResolvedPart, t: number, method: P
   ];
   for (const [name, eave, up, inward] of slopes) {
     const id = pid(c.partId);
-    // Panel's outer face lies on the roof plane; it is extruded inward by t.
-    const origin: Vec3 = eave;
+    // Outer face (+w) lies on the roof plane: start t inside and extrude outwards.
+    const back = name.includes("back");
+    const origin: Vec3 = [back ? w / 2 : -w / 2, eave[1] + inward[1] * t, eave[2] + inward[2] * t];
     panels.push({
       panelId: id, partId: c.partId, label: `${c.name} — ${name}`, materialKey: part.materialKey, thicknessMm: t, method,
       cut: cs(wasm, [rect(0, 0, w, s)]),
-      engrave: [[[t / 2, 0], [t / 2, s]], [[w - t / 2, 0], [w - t / 2, s]]],
+      engrave: [],
       score: [],
       text: [{ at: [w / 2, s / 2], text: id, size: 3 }],
-      place: { origin, u: [1, 0, 0], v: up, w: inward.map((x) => x) as Vec3 },
+      place: { origin, u: back ? [-1, 0, 0] : [1, 0, 0], v: up, w: inward.map((x) => -x) as Vec3 },
       notes: [],
     });
   }
@@ -397,7 +583,7 @@ function gablePanels(ctx: PanelContext, part: ResolvedPart, t: number, method: P
     panels,
     notes: [
       `Roof pitch ${(alpha * 180 / Math.PI).toFixed(1)}°. The two slopes meet at the ridge with a ${t} mm step — sand a bevel of ${(90 - alpha * 180 / Math.PI).toFixed(0)}° on the ridge edges or cover the joint with a ridge strip.`,
-      "Engraved lines on the underside of each slope mark where the gable ends sit (engrave them face-down or mirror the layer if your machine does not cut from below).",
+      `The gable ends sit ${t} mm in from each end of the slopes.`,
     ],
     warnings,
   };
@@ -571,8 +757,36 @@ function paperNet(ctx: PanelContext, part: ResolvedPart, t: number): PanelResult
     panels.push(mk("bottom disc", [disc()], []));
     return { panels, notes: ["Roll the wrap into a tube, glue the side tab, fold the teeth inwards and glue the discs onto them."], warnings: [] };
   }
+  if (p.type === "ngon") {
+    const side = 2 * p.r * Math.sin(Math.PI / p.n);
+    const strip: Poly[] = Array.from({ length: p.n }, (_, k) => rect(k * side, 0, (k + 1) * side, p.h));
+    const score: Poly[] = Array.from({ length: p.n - 1 }, (_, k) => [[(k + 1) * side, 0], [(k + 1) * side, p.h]] as Poly);
+    panels.push(mk("tower wrap", [...strip, tab([p.n * side, 0], [p.n * side, p.h], G, 1)], [...score, [[p.n * side, 0], [p.n * side, p.h]]]));
+    const P = ngonPoints(p.n, p.r);
+    panels.push(mk("tower base", [P.map(([x, y]) => [x + p.r, y + p.r] as Pt)], []));
+    const warnings = panels.filter((x) => !fitsPage(x.cut.bounds())).map((x) => `${x.label} is larger than an A4 page — scale down or print on A3.`);
+    return { panels, notes: ["Fold the tower wrap along every score line, glue the side tab, then glue the base inside."], warnings };
+  }
+  if (p.type === "pyramid") {
+    const side = 2 * p.r * Math.sin(Math.PI / p.n);
+    const slant = Math.hypot(p.h, p.r * Math.cos(Math.PI / p.n));
+    const L = Math.hypot(slant, side / 2); // apex to corner
+    const ang = 2 * Math.asin(side / 2 / L);
+    const fan: Poly[] = [];
+    const score: Poly[] = [];
+    for (let k = 0; k < p.n; k++) {
+      const a0 = k * ang, a1 = (k + 1) * ang;
+      fan.push([[0, 0], [L * Math.cos(a0), L * Math.sin(a0)], [L * Math.cos(a1), L * Math.sin(a1)]]);
+      if (k > 0) score.push([[0, 0], [L * Math.cos(a0), L * Math.sin(a0)]]);
+    }
+    const end = p.n * ang;
+    fan.push(tab([L * Math.cos(end), L * Math.sin(end)], [0, 0], G * 0.7, 1));
+    panels.push(mk("spire fan", fan, score));
+    return { panels, notes: ["Roll the fan into a cone along the score lines and glue the tab inside."], warnings: [] };
+  }
   // Fallback: layered card slices (works for any round/organic primitive).
-  return layeredRound(ctx, part, t, "paper");
+  if (p.type === "cylinder" || p.type === "ellipsoid") return layeredRound(ctx, part, t, "paper");
+  return panelsFor(ctx, { ...part, method: "cardboard" });
 }
 
 // ---------------- 3D placement of panels (for the assembled sheet preview and fit checks) ----------------
@@ -586,4 +800,163 @@ export function panelSolid(wasm: ManifoldToplevel, panel: Panel, comp: Component
   // Openings' local frame is relative to the opening component itself.
   if (comp.rotation.some((x) => x !== 0)) s = s.rotate(comp.rotation);
   return s.translate(comp.position);
+}
+
+// ---------------- 3D trimming: where volumes meet, panels take the real outline ----------------
+
+/** Panel slab in panel-local coordinates → project space (inverse of `toLocalSlab`). */
+function placeMatrix(pl: NonNullable<Panel["place"]>): Mat4 {
+  const { origin: o, u, v, w } = pl;
+  return [u[0], u[1], u[2], 0, v[0], v[1], v[2], 0, w[0], w[1], w[2], 0, o[0], o[1], o[2], 1];
+}
+
+function toLocalSlab(m: Manifold, pl: NonNullable<Panel["place"]>, comp: ComponentSpec): Manifold {
+  let s = m.translate([-comp.position[0], -comp.position[1], -comp.position[2]]);
+  const [rx, ry, rz] = comp.rotation;
+  if (rz) s = s.rotate([0, 0, -rz]);
+  if (ry) s = s.rotate([0, -ry, 0]);
+  if (rx) s = s.rotate([-rx, 0, 0]);
+  const { origin: o, u, v, w } = pl;
+  // Orthonormal basis: inverse = transpose.
+  const inv: Mat4 = [u[0], v[0], w[0], 0, u[1], v[1], w[1], 0, u[2], v[2], w[2], 0, -dot3(u, o), -dot3(v, o), -dot3(w, o), 1];
+  return s.transform(inv);
+}
+
+/**
+ * Subtract `cutters` (project-space solids: window holes, and volumes of parts that take precedence) from every
+ * placed panel, then read the new 2D outline back from the trimmed slab. Panels that vanish are dropped.
+ */
+export function trimPanels(wasm: ManifoldToplevel, panels: Panel[], comp: ComponentSpec, cutters: Manifold[]): { panels: Panel[]; trimmed: number; removed: number } {
+  if (!cutters.length) return { panels, trimmed: 0, removed: 0 };
+  const cutter = wasm.Manifold.union(cutters);
+  const cb = cutter.boundingBox();
+  const out: Panel[] = [];
+  let trimmed = 0, removed = 0;
+  for (const pn of panels) {
+    const solid = panelSolid(wasm, pn, comp);
+    if (!solid) { out.push(pn); continue; }
+    const b = solid.boundingBox();
+    if ([0, 1, 2].some((k) => b.max[k] <= cb.min[k] || cb.max[k] <= b.min[k])) { out.push(pn); continue; }
+    const before = solid.volume();
+    const cut = solid.subtract(cutter);
+    const after = cut.volume();
+    if (after > before * 0.999) { out.push(pn); continue; }
+    if (after < before * 0.03) { removed++; continue; }
+    const local = toLocalSlab(cut, pn.place!, comp);
+    let section = local.slice(pn.thicknessMm / 2);
+    // Drop slivers (anything narrower than ~1.2 mm cannot be cut or glued meaningfully).
+    section = section.offset(-0.6, "Miter", 2).offset(0.6, "Miter", 2);
+    if (section.isEmpty() || section.area() < 4) { removed++; continue; }
+    trimmed++;
+    out.push({ ...pn, cut: section });
+  }
+  return { panels: out, trimmed, removed };
+}
+
+// ---------------- cladding engraving (outer face) ----------------
+
+function insidePolys(polys: Pt[][], x: number, y: number) {
+  let inside = false;
+  for (const poly of polys)
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const [xi, yi] = poly[i], [xj, yj] = poly[j];
+      if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+  return inside;
+}
+
+/** Keep the parts of each polyline that lie inside the region (sampled every `step` mm). */
+function clipLines(lines: Poly[], region: Pt[][], step = 0.4, straight = false): Poly[] {
+  const out: Poly[] = [];
+  for (const line of lines) {
+    let run: Poly = [];
+    const flush = () => {
+      if (run.length >= 2) out.push(straight ? [run[0], run[run.length - 1]] : run);
+      run = [];
+    };
+    for (let i = 0; i + 1 < line.length; i++) {
+      const [x0, y0] = line[i], [x1, y1] = line[i + 1];
+      const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / step));
+      for (let k = i === 0 ? 0 : 1; k <= n; k++) {
+        const x = x0 + ((x1 - x0) * k) / n, y = y0 + ((y1 - y0) * k) / n;
+        if (insidePolys(region, x, y)) run.push([x, y]);
+        else flush();
+      }
+    }
+    flush();
+  }
+  return out;
+}
+
+function hash(i: number, j: number) {
+  const x = Math.sin(i * 127.1 + j * 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+/** Engraving lines for a surface pattern over a bounding box (u right, v up). */
+export function claddingLines(kind: Cladding, b: { min: number[]; max: number[] }): { lines: Poly[]; straight: boolean } {
+  const [x0, y0] = b.min, [x1, y1] = b.max;
+  const lines: Poly[] = [];
+  switch (kind) {
+    case "clapboard":
+      for (let y = y0 + 3; y < y1; y += 3) lines.push([[x0, y], [x1, y]]);
+      return { lines, straight: true };
+    case "boardbatten":
+      for (let x = x0 + 4; x < x1; x += 4) lines.push([[x, y0], [x, y1]]);
+      return { lines, straight: true };
+    case "shingle": {
+      const row = 3.2, wd = 4;
+      for (let j = 0, y = y0 + row; y < y1; j++, y += row) {
+        lines.push([[x0, y], [x1, y]]);
+        const off = (j % 2) * wd / 2;
+        for (let x = x0 + off; x < x1; x += wd) lines.push([[x, y - row], [x, y]]);
+      }
+      return { lines, straight: true };
+    }
+    case "brick": {
+      const row = 2.4, wd = 5;
+      for (let j = 0, y = y0 + row; y < y1; j++, y += row) {
+        lines.push([[x0, y], [x1, y]]);
+        for (let x = x0 + (j % 2) * wd / 2; x < x1; x += wd) lines.push([[x, y - row], [x, y]]);
+      }
+      return { lines, straight: true };
+    }
+    case "stone": {
+      // Irregular coursed stone: course heights and joint positions jittered deterministically.
+      let y = y0, j = 0;
+      while (y < y1) {
+        const hgt = 3.5 + hash(j, 7) * 2.5;
+        const yn = y + hgt;
+        lines.push([[x0, yn], [x1, yn]]);
+        let x = x0 + hash(j, 3) * 4;
+        let i = 0;
+        while (x < x1) { lines.push([[x, y], [x, yn]]); x += 4.5 + hash(j, i++) * 5; }
+        y = yn; j++;
+      }
+      return { lines, straight: true };
+    }
+    case "fishscale": {
+      const r = 1.8, row = 2.6;
+      for (let j = 0, y = y0 + row; y < y1 + row; j++, y += row) {
+        const off = (j % 2) * r;
+        for (let cx = x0 - r + off; cx < x1 + r; cx += 2 * r) {
+          const arc: Poly = [];
+          for (let k = 0; k <= 10; k++) { const a = Math.PI + (Math.PI * k) / 10; arc.push([cx + r * Math.cos(a), y + r * Math.sin(a)]); }
+          lines.push(arc);
+        }
+      }
+      return { lines, straight: false };
+    }
+    default:
+      return { lines: [], straight: true };
+  }
+}
+
+/** Add the panel's cladding pattern as engrave lines, clipped 0.8 mm inside its final outline and holes. */
+export function applyCladding(panel: Panel): Panel {
+  if (!panel.cladding || panel.cladding === "none") return panel;
+  const region = panel.cut.offset(-0.8, "Miter", 2).toPolygons().map((q) => q.map((v) => [v[0], v[1]] as Pt));
+  if (!region.length) return panel;
+  const { lines, straight } = claddingLines(panel.cladding, panel.cut.bounds() as unknown as { min: number[]; max: number[] });
+  return { ...panel, engrave: [...panel.engrave, ...clipLines(lines, region, 0.4, straight)] };
 }
