@@ -13,6 +13,8 @@ export interface AnalysisInput {
   description: string;
   intent: string;
   categoryHint: string;
+  /** Template the user picked; used only by the offline template provider. */
+  templateKey?: string | null;
   realSizeMm: number | null;
   targetSizeMm: number | null;
 }
@@ -69,7 +71,7 @@ export const templateProvider: AnalysisProvider = {
   id: "template",
   available: () => true,
   async analyse(input) {
-    const t = templateFor(input.categoryHint, `${input.description} ${input.intent}`);
+    const t = templateFor(input.categoryHint, input.templateKey);
     return {
       provider: "template",
       model: null,

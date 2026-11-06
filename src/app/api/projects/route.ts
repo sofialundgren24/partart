@@ -32,7 +32,7 @@ export const POST = handle(async (req: Request) => {
   const project = await db.project.create({
     data: {
       name, description: String(form.get("description") || ""), intent: String(form.get("intent") || ""),
-      category: String(form.get("category") || "other"), targetSizeMm: num(form.get("targetSizeMm")), realSizeMm: num(form.get("realSizeMm")),
+      category: String(form.get("category") || "other"), templateKey: form.get("templateKey") ? String(form.get("templateKey")) : null, targetSizeMm: num(form.get("targetSizeMm")), realSizeMm: num(form.get("realSizeMm")),
       region: String(form.get("region") || "SE"),
     },
   });

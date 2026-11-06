@@ -167,13 +167,20 @@ function generic(): T[] {
   ];
 }
 
-// Only explicit signs of a turreted/Victorian house. Generic words ("villa", "dollhouse") must NOT trigger it —
-// "villa" is just "house" in Swedish.
-const VICTORIAN = /victoria|viktoria|queen anne|turret|\btorn|\btower|gingerbread|snickargl/i;
+/**
+ * Starting templates, chosen explicitly by the user — never guessed from words in the description.
+ * Templates are only used when no vision model is available; with one, components come from the photo.
+ */
+export const TEMPLATE_OPTIONS: Record<string, { key: string; label: string }[]> = {
+  architecture: [
+    { key: "house", label: "Simple house (walls + pitched roof)" },
+    { key: "victorian", label: "Victorian house (turret, porch, trim)" },
+  ],
+};
 
-export function templateFor(category: string, text = ""): { components: T[]; label: string } {
+export function templateFor(category: string, templateKey?: string | null): { components: T[]; label: string } {
   switch (category) {
-    case "architecture": return VICTORIAN.test(text) ? { components: victorian(), label: "Victorian house with turret" } : { components: house(), label: "Pitched-roof house" };
+    case "architecture": return templateKey === "victorian" ? { components: victorian(), label: "Victorian house with turret" } : { components: house(), label: "Pitched-roof house" };
     case "vehicles": return { components: vehicle(), label: "Four-wheel vehicle" };
     case "figurines": return { components: figurine(), label: "Standing figure" };
     case "furniture": return { components: furniture(), label: "Chair" };

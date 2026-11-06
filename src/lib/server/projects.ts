@@ -110,13 +110,13 @@ registerJob("analyze", async (job, progress) => {
   try {
     result = await provider.analyse({
       images: await Promise.all(project.images.map(async (i) => ({ mime: i.mime, data: await storage.get(i.storagePath), view: i.view, note: i.note }))),
-      description: project.description, intent: project.intent, categoryHint: project.category,
+      description: project.description, intent: project.intent, categoryHint: project.category, templateKey: project.templateKey,
       realSizeMm: project.realSizeMm, targetSizeMm: project.targetSizeMm,
     });
   } catch (e) {
     if (provider.id === "template") throw e;
     await progress(0.4, `Vision analysis failed (${e instanceof Error ? e.message : e}); falling back to template.`);
-    result = await templateProvider.analyse({ images: [], description: project.description, intent: project.intent, categoryHint: project.category, realSizeMm: project.realSizeMm, targetSizeMm: project.targetSizeMm });
+    result = await templateProvider.analyse({ images: [], description: project.description, intent: project.intent, categoryHint: project.category, templateKey: project.templateKey, realSizeMm: project.realSizeMm, targetSizeMm: project.targetSizeMm });
     result.findings.assumptions.unshift(`Vision analysis failed: ${e instanceof Error ? e.message : String(e)}`);
   }
   await progress(0.6, "Building component hierarchy and scaling to your target size…");

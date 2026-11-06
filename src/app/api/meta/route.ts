@@ -1,5 +1,5 @@
 import { claudeProvider } from "@/lib/analysis/providers";
-import { CATEGORIES } from "@/lib/analysis/templates";
+import { CATEGORIES, TEMPLATE_OPTIONS } from "@/lib/analysis/templates";
 import { MATERIALS } from "@/lib/materials/catalog";
 import { MODES } from "@/lib/design/modes";
 import { LASER_PRESETS, PRINTER_PRESETS } from "@/lib/manufacture/resolve";
@@ -18,7 +18,7 @@ export async function GET() {
         { id: "generative-image-to-3d", status: "not-configured", note: "Interface defined; no provider wired in this build." },
       ],
     },
-    categories: CATEGORIES, materials: MATERIALS, modes: MODES, printers: PRINTER_PRESETS, lasers: LASER_PRESETS,
+    categories: CATEGORIES, templates: TEMPLATE_OPTIONS, materials: MATERIALS, modes: MODES, printers: PRINTER_PRESETS, lasers: LASER_PRESETS,
     regions: REGIONS.map((r) => ({ ...r, hasDirectory: hasDirectory(r.code) })),
   });
 }

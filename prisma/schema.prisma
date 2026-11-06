@@ -28,6 +28,8 @@ model Project {
   description     String   @default("")
   intent          String   @default("")
   category        String   @default("other")
+  // Starting template chosen by the user (only used when no vision analysis is available).
+  templateKey     String?
   // Size the user wants the finished object to be, along its largest dimension (mm).
   targetSizeMm    Float?
   // Real-world size of the reference object if known (mm, largest dimension).

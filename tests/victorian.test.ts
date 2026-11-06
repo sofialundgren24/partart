@@ -10,7 +10,7 @@ import type { ComponentSpec } from "@/lib/geometry/types";
 const OUT = path.resolve("storage/test-out");
 
 describe("Victorian house", () => {
-  const base: ComponentSpec[] = templateFor("architecture", "victorian house").components.map((c) => ({ ...c, provenance: "template", confidence: 0.5 }));
+  const base: ComponentSpec[] = templateFor("architecture", "victorian").components.map((c) => ({ ...c, provenance: "template", confidence: 0.5 }));
 
   it("template has the architectural vocabulary", () => {
     const types = new Set(base.map((c) => c.primitive.type));

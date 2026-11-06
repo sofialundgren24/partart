@@ -14,6 +14,7 @@ const EXAMPLES = [
 interface Meta {
   providers: { analysis: { id: string; model: string | null } };
   categories: { key: string; label: string }[];
+  templates: Record<string, { key: string; label: string }[]>;
   regions: { code: string; name: string; hasDirectory: boolean }[];
 }
 
@@ -26,6 +27,7 @@ export default function CreatePage() {
   const [description, setDescription] = useState("");
   const [intent, setIntent] = useState("");
   const [category, setCategory] = useState("architecture");
+  const [templateKey, setTemplateKey] = useState("house");
   const [targetSize, setTargetSize] = useState("250");
   const [realSize, setRealSize] = useState("");
   const [region, setRegion] = useState("SE");
@@ -56,6 +58,7 @@ export default function CreatePage() {
       fd.set("description", description);
       fd.set("intent", intent);
       fd.set("category", category);
+      if (meta?.templates[category]) fd.set("templateKey", templateKey);
       fd.set("targetSizeMm", targetSize);
       fd.set("realSizeMm", realSize);
       fd.set("region", region);
@@ -148,6 +151,15 @@ export default function CreatePage() {
               </select>
               <p className="mt-1 text-[11px] text-ink-soft">With vision analysis the category is detected automatically; this is a hint.</p>
             </div>
+            {analysis?.id !== "claude-vision" && meta?.templates[category] && (
+              <div className="col-span-2">
+                <label className="label">Starting template</label>
+                <select className="input mt-1" value={templateKey} onChange={(e) => setTemplateKey(e.target.value)}>
+                  {meta.templates[category].map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+                </select>
+                <p className="mt-1 text-[11px] text-ink-soft">No photo analysis is configured, so you choose the starting structure yourself. PARTART never guesses it from words in your description.</p>
+              </div>
+            )}
             <div>
               <label className="label">Region (shopping)</label>
               <select className="input mt-1" value={region} onChange={(e) => setRegion(e.target.value)}>
