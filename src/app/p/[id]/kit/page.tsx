@@ -5,6 +5,7 @@ import { activeDesign, useProject } from "@/components/ProjectContext";
 import { api, useFetch, useJob } from "@/lib/client/api";
 import { Empty, JobProgress, ReadinessBadge, SectionTitle } from "@/components/ui";
 import { Fruit } from "@/components/Fruit";
+import { CladdingTable, type CladdingCount } from "@/components/CladdingTable";
 
 interface Printer { name: string; buildX: number; buildY: number; buildZ: number; nozzleMm: number; layerHeightMm: number; filament: string; walls: number; infillPct: number; supports: string; adhesion: string; clearanceMm: number }
 interface Laser { name: string; workX: number; workY: number; kerfMm: number; software: string; sheetW: number; sheetH: number; spacingMm: number; jointClearanceMm: number }
@@ -13,7 +14,7 @@ interface PrintCard { fileId: string; partIds: string[]; name: string; file: str
 export interface BuildFull {
   id: string; status: string; readiness: string | null; createdAt: string; designId: string; printer: Printer; laser: Laser;
   files: { id: string; kitPath: string; format: string; purpose: string; partIds: string[]; bytes: number; sha256: string }[];
-  report: { checks: Check[]; printCards: PrintCard[]; layouts: { materialKey: string; thicknessMm: number; method: string; sheetW: number; sheetH: number; sheets: number; wastePct: number; svgFiles: string[]; unplaced: string[] }[]; manualParts: { partId: string; name: string; material: string; size: string; instructions: string }[]; stats: { components: number; printedFiles: number; sheetParts: number; sheets: number; filamentG: number } } | null;
+  report: { checks: Check[]; printCards: PrintCard[]; layouts: { materialKey: string; thicknessMm: number; method: string; sheetW: number; sheetH: number; sheets: number; wastePct: number; svgFiles: string[]; unplaced: string[] }[]; manualParts: { partId: string; name: string; material: string; size: string; instructions: string }[]; stats: { components: number; printedFiles: number; sheetParts: number; sheets: number; filamentG: number }; cladding?: CladdingCount[] } | null;
 }
 
 export default function KitPage() {
@@ -185,6 +186,7 @@ function Sheets({ b }: { b: BuildFull }) {
   const instr = b.files.find((f) => f.kitPath.endsWith("LASER_INSTRUCTIONS.md"));
   return (
     <div className="space-y-5">
+      {r.cladding && <CladdingTable counts={r.cladding} />}
       {instr && <p className="text-sm">Before cutting, read <a className="underline" href={`/api/files/${instr.id}?inline`}>LASER_INSTRUCTIONS.md</a> — layer colours, LightBurn / xTool import and the test-cut procedure. Kerf {b.laser.kerfMm} mm is already compensated.</p>}
       {r.layouts.map((l) => (
         <div key={l.materialKey + l.thicknessMm + l.method} className="card p-4">

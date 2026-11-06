@@ -162,7 +162,7 @@ registerJob("build-kit", async (job, progress) => {
   const kit = await buildKit({
     projectName: project.name, category: project.category, designName: design.name, mode: design.mode,
     components: comps, assignments, printer: JSON.parse(build.printerProfileJson) as PrinterProfile, laser: JSON.parse(build.laserProfileJson) as LaserProfile,
-    region: project.region, finish: controls.finish, difficulty: controls.difficulty,
+    region: project.region, finish: controls.finish, difficulty: controls.difficulty, claddingAs: controls.claddingAs,
     references: await Promise.all(project.images.map(async (i) => ({ fileName: i.fileName, data: await storage.get(i.storagePath) }))),
     meshLoader,
     analysisNotes: findings ? [project.analyses[0].summary, ...(findings.assumptions ?? []), findings.scaleBasis].filter(Boolean) : [],
@@ -174,7 +174,7 @@ registerJob("build-kit", async (job, progress) => {
     await db.generatedFile.create({ data: { buildId, kitPath: f.kitPath, storagePath: rel, format: f.format, purpose: f.purpose, partIds: JSON.stringify(f.partIds), bytes: f.bytes, sha256: f.sha256 } });
   }
   const zipRel = await storage.put(`${dir}/PARTART_${project.name.replace(/[^A-Za-z0-9]+/g, "_")}.zip`, kit.zip);
-  await db.validationReport.create({ data: { buildId, status: kit.readiness, reportJson: JSON.stringify({ checks: kit.checks, printCards: kit.printCards, layouts: kit.layouts, manualParts: kit.manualParts, partsList: kit.partsList, stats: kit.stats, catalog: kit.catalog }) } });
+  await db.validationReport.create({ data: { buildId, status: kit.readiness, reportJson: JSON.stringify({ checks: kit.checks, printCards: kit.printCards, layouts: kit.layouts, manualParts: kit.manualParts, partsList: kit.partsList, stats: kit.stats, catalog: kit.catalog, cladding: kit.cladding }) } });
   await db.shoppingList.create({ data: { buildId, listJson: JSON.stringify(kit.shopping) } });
   for (const s of kit.steps) await db.assemblyStep.create({ data: { buildId, index: s.index, title: s.title, contentJson: JSON.stringify(s) } });
   await db.buildKit.update({ where: { id: buildId }, data: { status: "done", readiness: kit.readiness, zipPath: zipRel, snapshotJson: JSON.stringify({ components: comps, assignments, controls }) } });

@@ -36,3 +36,21 @@ describe("Victorian house", () => {
     });
   }
 });
+
+describe("cladding pieces", () => {
+  it("cuts every course as a counted strip", async () => {
+    const base: ComponentSpec[] = templateFor("architecture", "victorian").components.map((c) => ({ ...c, provenance: "template", confidence: 0.5 }));
+    const kit = await buildKit({
+      projectName: "Victorian strips", category: "architecture", designName: "woodwork", mode: "woodwork", components: base,
+      assignments: proposeAssignments("woodwork", base, DEFAULT_CONTROLS), printer: PRINTER_PRESETS[1], laser: { ...LASER_PRESETS[2] },
+      region: "SE", finish: "painted", references: [], claddingAs: "pieces",
+    });
+    fs.writeFileSync(path.join(OUT, "victorian_strips.zip"), kit.zip);
+    const sum = kit.cladding.reduce((s, c) => s + c.pieces, 0);
+    console.log(`strips: ${sum}, shingles: ${kit.cladding.filter((c) => c.kind !== "clapboard").reduce((s, c) => s + c.units, 0)}, sheets: ${kit.stats.sheets}`);
+    for (const c of kit.cladding.slice(0, 8)) console.log(`  ${c.partId} ${c.label.split(" — ").slice(-1)[0]} ${c.kind}: ${c.courses} courses, ${c.pieces} strips, ${c.units} units`);
+    expect(sum).toBeGreaterThan(50);
+    expect(kit.files.some((f) => f.kitPath.endsWith("CLADDING_COUNTS.md"))).toBe(true);
+    expect(kit.checks.filter((c) => c.level === "fail")).toEqual([]);
+  });
+});

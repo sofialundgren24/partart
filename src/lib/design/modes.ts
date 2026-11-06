@@ -10,12 +10,14 @@ export type ModeKey = "realistic" | "woodwork" | "acrylic" | "stylized" | "mixed
 export interface DesignControls {
   detail: number; // 0..1 — components smaller than (1 - detail) × 12 % of the object are omitted
   difficulty: "easy" | "medium" | "hard"; // easy = butt joints / fewer parts
+  /** "pieces" = every shingle course / siding board is a separate cut strip; "engrave" = pattern engraved only. */
+  claddingAs: "pieces" | "engrave";
   targetSizeMm: number | null; // overrides project target size for this design
   palette: "reference" | "bold" | "natural" | "mono";
   finish: "raw" | "painted" | "oiled" | "polished";
 }
 
-export const DEFAULT_CONTROLS: DesignControls = { detail: 0.8, difficulty: "medium", targetSizeMm: null, palette: "reference", finish: "raw" };
+export const DEFAULT_CONTROLS: DesignControls = { detail: 0.8, difficulty: "medium", targetSizeMm: null, palette: "reference", finish: "raw", claddingAs: "pieces" };
 
 export interface ModeDef {
   key: ModeKey;

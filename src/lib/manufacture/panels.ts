@@ -866,7 +866,7 @@ function insidePolys(polys: Pt[][], x: number, y: number) {
 }
 
 /** Keep the parts of each polyline that lie inside the region (sampled every `step` mm). */
-function clipLines(lines: Poly[], region: Pt[][], step = 0.4, straight = false): Poly[] {
+export function clipLines(lines: Poly[], region: Pt[][], step = 0.4, straight = false): Poly[] {
   const out: Poly[] = [];
   for (const line of lines) {
     let run: Poly = [];

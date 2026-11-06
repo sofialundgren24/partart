@@ -14,7 +14,7 @@ interface Stats {
   sheetAreaCm2: Record<string, number>; materials: string[]; equipment: string[]; difficulty: string; difficultyReason: string;
 }
 type DesignWithStats = DesignRow & { stats: Stats; controls: Controls; updatedAt: string };
-interface Controls { detail: number; difficulty: string; targetSizeMm: number | null; palette: string; finish: string }
+interface Controls { detail: number; difficulty: string; targetSizeMm: number | null; palette: string; finish: string; claddingAs?: string }
 
 const METHOD_LABEL: Record<string, string> = { print: "3D print", laser: "Laser cut", paper: "Paper", cardboard: "Cardboard", manual: "Hand-made", omit: "Leave out" };
 
@@ -182,7 +182,7 @@ function ControlsPanel({ design, onSaved }: { design: DesignWithStats; onSaved: 
     setSaving(true);
     try { await api(`/api/designs/${design.id}`, { method: "PATCH", json: { controls: c } }); onSaved(); } finally { setSaving(false); }
   };
-  const Seg = ({ k, opts }: { k: "difficulty" | "palette" | "finish"; opts: string[] }) => (
+  const Seg = ({ k, opts }: { k: "difficulty" | "palette" | "finish" | "claddingAs"; opts: string[] }) => (
     <div className="flex flex-wrap gap-1">{opts.map((o) => <button key={o} onClick={() => setC({ ...c, [k]: o })} className={`chip ${c[k] === o ? "bg-ink text-paper" : ""}`}>{o}</button>)}</div>
   );
   return (
@@ -196,6 +196,8 @@ function ControlsPanel({ design, onSaved }: { design: DesignWithStats; onSaved: 
       <div><span className="label">Assembly difficulty</span><Seg k="difficulty" opts={["easy", "medium", "hard"]} /></div>
       <div><span className="label">Palette</span><Seg k="palette" opts={["reference", "bold", "natural", "mono"]} /></div>
       <div><span className="label">Finish</span><Seg k="finish" opts={["raw", "painted", "oiled", "polished"]} /></div>
+      <div><span className="label">Shingles &amp; siding</span><Seg k="claddingAs" opts={["pieces", "engrave"]} />
+        <span className="text-[11px] text-ink-soft">pieces = every course cut as its own strip (exact counts); engrave = pattern only.</span></div>
       <label className="block">
         <span className="label">Final size (largest dimension, mm)</span>
         <input className="input mt-1" type="number" placeholder="project size" value={c.targetSizeMm ?? ""} onChange={(e) => setC({ ...c, targetSizeMm: e.target.value ? Number(e.target.value) : null })} />

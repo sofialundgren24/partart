@@ -2,6 +2,17 @@
 
 _Last updated 2026-11-06 (session 2: architecture)._
 
+## Session 3 — shingles and siding as countable cut pieces
+
+With **Shingles & siding = pieces** (default), every course on every clad wall and roof is its own cut strip on
+0.8 mm veneer ply (cardstock for paper builds), shaped to the real surface (around windows, along gables and trimmed
+edges). Shingle strips have slits between tiles and alternate rows are staggered; fishscale strips have round tabs;
+clapboard is single boards; board-and-batten gives boards plus battens. Each strip is labelled panel · course ·
+letter in the hidden overlap zone, and the base panel gets an engraved guide line per course.
+Exact counts per surface are in `04_LASER_CUT/CLADDING_COUNTS.md`, the kit page and the catalogue; the assembly guide
+gets a "Shingles and siding" step. Victorian house: 1,831 strips, 10,464 shingles on 10 sheets of 600 × 400 mm.
+Known gap: walls hidden behind a bay or porch roof are still clad (counts include hidden areas).
+
 ## Session 2 — from cubes to buildings
 
 Goal: a photo of a complex house (Victorian, with turret, porch and trim) must come apart into real walls, roofs and

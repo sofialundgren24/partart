@@ -19,6 +19,7 @@ import { buildShoppingList, type ShoppingList } from "../materials/shopping";
 import { blenderScript, buildCourse, courseMarkdown } from "../learn/tutorials";
 import { assemblySequence, type AssemblyStepDef } from "./assembly";
 import { nest, type SheetLayout } from "./nest";
+import { claddingPieces, type CladdingCount } from "./cladding";
 import { applyCladding, panelSolid, panelsFor, trimPanels, type Panel } from "./panels";
 import { buildPrintParts, FRAME, printWallMm, type PrintPart } from "./print";
 import { flatten, resolveTree, type Assignment, type LaserProfile, type PrinterProfile, type ResolvedPart } from "./resolve";
@@ -35,6 +36,7 @@ export interface KitInput {
   region: string;
   finish: string;
   difficulty?: string;
+  claddingAs?: "pieces" | "engrave";
   references: { fileName: string; data: Buffer }[];
   meshLoader?: (p: string) => MeshData;
   analysisNotes?: string[];
@@ -65,6 +67,7 @@ export interface KitResult {
   partsList: PartRow[];
   zip: Buffer;
   catalog: { groups: CatalogGroup[]; parts: Omit<CatalogPart, "render">[] };
+  cladding: CladdingCount[];
   stats: { components: number; printedFiles: number; sheetParts: number; sheets: number; filamentG: number };
 }
 
@@ -193,6 +196,8 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
     parentThickness: (id: string) => { const par = byId.get(id); return par && par.method !== "print" ? material(par.materialKey).thicknessMm ?? 3 : printWallMm(input.printer); },
   };
   const panels: Panel[] = [];
+  const claddingStrips: Panel[] = [];
+  const claddingCounts: CladdingCount[] = [];
   const dowelStacks: { partId: string; heightMm: number }[] = [];
   const panelNotes = new Map<string, string[]>();
   for (const sp of sheetParts) {
@@ -200,7 +205,13 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
     // Openings and overlapping volumes are cut in 3D, then cladding is engraved on the final outline.
     const cutters = [...openingsFor(sp.comp.partId), ...dominantsFor(sp.comp.partId)];
     const tr = trimPanels(wasm, r.panels, sp.comp, cutters);
-    r.panels = tr.panels.map(applyCladding);
+    r.panels = [];
+    for (const pn of tr.panels) {
+      const stripStock = pn.method === "laser" ? { materialKey: "plywood-08", t: 0.8, method: pn.method } : { materialKey: "cardstock-250", t: 0.3, method: pn.method };
+      const cp = input.claddingAs !== "engrave" && pn.place ? claddingPieces(wasm, pn, stripStock) : null;
+      if (cp) { r.panels.push(cp.base); claddingStrips.push(...cp.strips); claddingCounts.push(cp.count); }
+      else r.panels.push(applyCladding(pn));
+    }
     if (tr.trimmed || tr.removed) r.notes.push(`${tr.trimmed} panel(s) shaped to meet neighbouring parts or openings${tr.removed ? `, ${tr.removed} hidden panel(s) dropped` : ""}.`);
     panels.push(...r.panels);
     panelNotes.set(sp.comp.partId, r.notes);
@@ -208,6 +219,8 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
     if (r.notes.some((n) => n.includes("dowel"))) dowelStacks.push({ partId: sp.comp.partId, heightMm: r.panels.length * r.panels[0].thicknessMm });
     if (!r.panels.length) checks.push({ area: "laser", level: "fail", partIds: [sp.comp.partId], message: `${sp.comp.partId}: no sheet geometry could be generated.` });
   }
+  // Cladding strips are real cut parts: they are nested onto their own (thin) sheets like everything else.
+  panels.push(...claddingStrips);
   const laserPanels = panels.filter((p) => p.method === "laser");
   const paperPanels = panels.filter((p) => p.method !== "laser");
   const layouts: SheetLayout[] = [
@@ -243,6 +256,18 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
   const paperLayouts = layouts.filter((l) => l.method !== "laser" && l.sheets.length);
   if (laserLayouts.length) files.push(file("04_LASER_CUT/sheet_layouts.pdf", await layoutsPdf(laserLayouts, input.projectName), "pdf", "Reference printout of all laser sheets"));
   if (paperLayouts.length) files.push(file("04_PAPER_TEMPLATES/templates_print_at_100pct.pdf", await layoutsPdf(paperLayouts, input.projectName), "pdf", "Print-at-100% cut & fold templates"));
+  if (claddingCounts.length) {
+    const rows = claddingCounts.map((c) => `| ${c.partId} | ${c.label.split(" — ").slice(1).join(" — ")} | ${c.kind} | ${c.courses} | ${c.pieces} | ${c.kind === "shingle" || c.kind === "fishscale" ? c.units : "—"} | ${c.totalLengthMm} | ${c.exposureMm} |`);
+    const sum = (k: "pieces" | "totalLengthMm") => claddingCounts.reduce((s, c) => s + c[k], 0);
+    const shingles = claddingCounts.filter((c) => c.kind === "shingle" || c.kind === "fishscale").reduce((s, c) => s + c.units, 0);
+    const md = [
+      "# Shingles & siding — exact counts", "",
+      "Every course is its own cut strip (thin sheets: 0.8 mm veneer ply, or cardstock for paper builds). Strip labels: panel · course (R01 = bottom) · letter (left → right).", "",
+      "| Part | Surface | Type | Courses | Strips | Shingles | Total strip length mm | Exposure mm |", "|---|---|---|---|---|---|---|---|",
+      ...rows, "", `**Total:** ${sum("pieces")} strips, ${shingles} shingles, ${(sum("totalLengthMm") / 1000).toFixed(2)} m of strip.`, "",
+    ].join("\n");
+    files.push(file("04_LASER_CUT/CLADDING_COUNTS.md", md, "md", "Exact shingle and siding counts per surface", [...new Set(claddingCounts.map((c) => c.partId))]));
+  }
   if (laserLayouts.length) files.push(file("04_LASER_CUT/LASER_INSTRUCTIONS.md", laserInstructions(input.laser, laserLayouts), "md", "How to import and cut the sheets"));
 
   // ---------- assembled manufacturing geometry (shared coordinate system) ----------
@@ -273,6 +298,22 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
 
   // ---------- assembly ----------
   const steps = assemblySequence(roots.filter((r) => r.method !== "omit"));
+  if (claddingCounts.length) {
+    const byPart = new Map<string, CladdingCount[]>();
+    for (const c of claddingCounts) byPart.set(c.partId, [...(byPart.get(c.partId) ?? []), c]);
+    steps.push({
+      index: steps.length + 1, title: "Shingles and siding", partIds: [...byPart.keys()], attachTo: null,
+      instructions: [
+        "Paint the strips before gluing (much easier than painting afterwards).",
+        "Work from the BOTTOM up on every wall and roof surface: course R01 along the bottom edge, then R02 on the next engraved guide line, and so on. Each course overlaps the one below; the course label sits in the hidden overlap.",
+        "Strips with the same course number and letters a, b, c… go side by side in that course (left to right as on the sheet). Shingle rows are already staggered.",
+        ...[...byPart.entries()].map(([id, cs]) => `${id}: ${cs.map((c) => `${c.label.split(" — ").slice(-1)[0]} ${c.courses} courses, ${c.pieces} strips${c.kind === "shingle" || c.kind === "fishscale" ? ` (${c.units} shingles)` : ""}`).join("; ")}.`),
+      ],
+      tools: ["Tweezers", "Toothpicks for glue", "Steel ruler"],
+      adhesives: ["PVA wood glue (thin) or tacky glue"],
+      warnings: ["Use very little glue — excess shows when it squeezes out under the next course."],
+    });
+  }
   const covered = new Set(steps.flatMap((s) => s.partIds));
   const missing = live.filter((p) => !covered.has(p.comp.partId));
   checks.push(missing.length
@@ -415,6 +456,7 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
 
   return {
     files, readiness, checks, printCards, layouts: layoutSummary, steps, shopping, manualParts, partsList, zip: zipBuf,
+    cladding: claddingCounts,
     catalog: { groups: catalogGroups, parts: catalogParts.map(({ render: _r, ...rest }) => { void _r; return rest; }) },
     stats: { components: live.length, printedFiles: prints.length, sheetParts: panels.length, sheets: layouts.reduce((s, l) => s + l.sheets.length, 0), filamentG: prints.reduce((s, p) => s + p.filamentEstimateG, 0) },
   };
@@ -511,7 +553,7 @@ function connectionChecks(live: ResolvedPart[], byId: Map<string, ResolvedPart>,
     else checks.push({ area: "connection", level: "pass", partIds: [p.comp.partId, ...touching.slice(0, 3)], message: `${p.comp.partId} is supported by ${touching.slice(0, 3).join(", ")}${touching.length > 3 ? ` +${touching.length - 3}` : ""}.` });
   }
   // Only stock that carries slots/fingers/tabs is sensitive to thickness (panes and plain slices are not).
-  const jointed = panels.filter((p) => p.method === "laser" && /wall|floor|lid/.test(p.label));
+  const jointed = panels.filter((p) => p.method === "laser" && /wall|floor|lid/.test(p.label) && !/-C\d{3}$/.test(p.panelId));
   const laserThick = new Set(jointed.map((p) => `${p.materialKey} ${p.thicknessMm} mm`));
   for (const t of laserThick) checks.push({ area: "connection", level: "warn", partIds: [], message: `Slots and finger joints are sized for nominal ${t}. Measure your stock — if it differs by > 0.1 mm, update the material and regenerate.` });
 }

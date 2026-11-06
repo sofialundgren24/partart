@@ -10,7 +10,7 @@ const Patch = z.object({
   name: z.string().min(1).optional(),
   controls: z.object({
     detail: z.number().min(0).max(1), difficulty: z.enum(["easy", "medium", "hard"]), targetSizeMm: z.number().positive().nullable(),
-    palette: z.enum(["reference", "bold", "natural", "mono"]), finish: z.enum(["raw", "painted", "oiled", "polished"]),
+    palette: z.enum(["reference", "bold", "natural", "mono"]), finish: z.enum(["raw", "painted", "oiled", "polished"]), claddingAs: z.enum(["pieces", "engrave"]),
   }).partial().optional(),
   /** Re-run the mode's proposals for every component the user has not locked. */
   repropose: z.boolean().optional(),

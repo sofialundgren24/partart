@@ -4,13 +4,14 @@ import { useMemo, useState } from "react";
 import { activeDesign, useProject } from "@/components/ProjectContext";
 import { useFetch } from "@/lib/client/api";
 import { Empty, SectionTitle, Swatch } from "@/components/ui";
+import { CladdingTable, type CladdingCount } from "@/components/CladdingTable";
 
 interface CatalogPart {
   partId: string; name: string; method: string; material: string; materialSwatch: string; paint: { name: string; hex: string } | null;
   finish: string; glue: string[]; files: string[]; size: string; notes: string[];
 }
 interface CatalogGroup { heading: string; items: { name: string; spec: string; quantity: string; swatch?: string; usedFor: string[] }[] }
-interface Build { id: string; files: { id: string; kitPath: string }[]; report: { catalog?: { groups: CatalogGroup[]; parts: CatalogPart[] } } | null }
+interface Build { id: string; files: { id: string; kitPath: string }[]; report: { catalog?: { groups: CatalogGroup[]; parts: CatalogPart[] }; cladding?: CladdingCount[] } | null }
 
 const METHOD_STYLE: Record<string, string> = {
   "Laser cut": "bg-[#d9b98a]/40", "3D print": "bg-tomato/15", Paper: "bg-butter/40", Cardboard: "bg-[#c49a6c]/30", "Hand-made / bought": "bg-strawberry/20",
@@ -58,6 +59,8 @@ export default function CatalogPage() {
           </div>
         ))}
       </section>
+
+      {build.data.report?.cladding && build.data.report.cladding.length > 0 && <div className="mb-10"><CladdingTable counts={build.data.report.cladding} /></div>}
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <h2 className="riso mr-4 text-3xl font-black">Every part ({cat.parts.length})</h2>
