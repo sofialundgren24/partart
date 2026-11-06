@@ -14,7 +14,7 @@ interface Stats {
   sheetAreaCm2: Record<string, number>; materials: string[]; equipment: string[]; difficulty: string; difficultyReason: string;
 }
 type DesignWithStats = DesignRow & { stats: Stats; controls: Controls; updatedAt: string };
-interface Controls { detail: number; difficulty: string; targetSizeMm: number | null; palette: string; finish: string; claddingAs?: string }
+interface Controls { detail: number; difficulty: string; targetSizeMm: number | null; palette: string; finish: string; claddingAs?: string; shingleExposureMm?: number }
 
 const METHOD_LABEL: Record<string, string> = { print: "3D print", laser: "Laser cut", paper: "Paper", cardboard: "Cardboard", manual: "Hand-made", omit: "Leave out" };
 
@@ -198,6 +198,11 @@ function ControlsPanel({ design, onSaved }: { design: DesignWithStats; onSaved: 
       <div><span className="label">Finish</span><Seg k="finish" opts={["raw", "painted", "oiled", "polished"]} /></div>
       <div><span className="label">Shingles &amp; siding</span><Seg k="claddingAs" opts={["pieces", "engrave"]} />
         <span className="text-[11px] text-ink-soft">pieces = every course cut as its own strip (exact counts); engrave = pattern only.</span></div>
+      <label className="block text-sm">
+        <span className="label">Shingle size · {(c.shingleExposureMm ?? 3.2).toFixed(1)} mm visible per course</span>
+        <input type="range" min={2} max={10} step={0.2} value={c.shingleExposureMm ?? 3.2} onChange={(e) => setC({ ...c, shingleExposureMm: Number(e.target.value) })} className="w-full accent-[#e8553f]" />
+        <span className="text-[11px] text-ink-soft">Siding boards scale with it. Doubling the size gives about a quarter as many shingles. At ~1:45 scale, 3.2 mm ≈ a real 14 cm shingle.</span>
+      </label>
       <label className="block">
         <span className="label">Final size (largest dimension, mm)</span>
         <input className="input mt-1" type="number" placeholder="project size" value={c.targetSizeMm ?? ""} onChange={(e) => setC({ ...c, targetSizeMm: e.target.value ? Number(e.target.value) : null })} />

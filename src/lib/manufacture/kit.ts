@@ -20,7 +20,7 @@ import { blenderScript, buildCourse, courseMarkdown } from "../learn/tutorials";
 import { assemblySequence, type AssemblyStepDef } from "./assembly";
 import { nest, type SheetLayout } from "./nest";
 import { claddingPieces, type CladdingCount } from "./cladding";
-import { applyCladding, panelSolid, panelsFor, trimPanels, type Panel } from "./panels";
+import { applyCladding, panelSolid, panelsFor, toLocalSlab, trimPanels, type Panel } from "./panels";
 import { buildPrintParts, FRAME, printWallMm, type PrintPart } from "./print";
 import { flatten, resolveTree, type Assignment, type LaserProfile, type PrinterProfile, type ResolvedPart } from "./resolve";
 
@@ -37,6 +37,7 @@ export interface KitInput {
   finish: string;
   difficulty?: string;
   claddingAs?: "pieces" | "engrave";
+  shingleExposureMm?: number;
   references: { fileName: string; data: Buffer }[];
   meshLoader?: (p: string) => MeshData;
   analysisNotes?: string[];
@@ -198,6 +199,11 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
   const panels: Panel[] = [];
   const claddingStrips: Panel[] = [];
   const claddingCounts: CladdingCount[] = [];
+  let hiddenFaces = 0;
+  // Volumes that can cover another part's outer face (walls against walls, roofs over slopes, chimneys…).
+  const coversFor = (partId: string): Manifold[] => live
+    .filter((o) => o.comp.partId !== partId && VOLUME_ROLES.has(o.comp.role) && VOLUME_TYPES.has(o.comp.primitive.type))
+    .map((o) => volOf(o));
   const dowelStacks: { partId: string; heightMm: number }[] = [];
   const panelNotes = new Map<string, string[]>();
   for (const sp of sheetParts) {
@@ -206,9 +212,12 @@ export async function buildKit(input: KitInput): Promise<KitResult> {
     const cutters = [...openingsFor(sp.comp.partId), ...dominantsFor(sp.comp.partId)];
     const tr = trimPanels(wasm, r.panels, sp.comp, cutters);
     r.panels = [];
-    for (const pn of tr.panels) {
+    const covers = coversFor(sp.comp.partId);
+    for (const pn0 of tr.panels) {
+      const pn = pn0.cladding && pn0.cladding !== "none" && pn0.place ? withVisibleFace(wasm, pn0, sp.comp, covers) : pn0;
+      if (pn.visible && pn.visible.isEmpty()) { r.panels.push({ ...pn, cladding: "none", visible: undefined }); hiddenFaces++; continue; }
       const stripStock = pn.method === "laser" ? { materialKey: "plywood-08", t: 0.8, method: pn.method } : { materialKey: "cardstock-250", t: 0.3, method: pn.method };
-      const cp = input.claddingAs !== "engrave" && pn.place ? claddingPieces(wasm, pn, stripStock) : null;
+      const cp = input.claddingAs !== "engrave" && pn.place ? claddingPieces(wasm, pn, stripStock, (input.shingleExposureMm ?? 3.2) / 3.2) : null;
       if (cp) { r.panels.push(cp.base); claddingStrips.push(...cp.strips); claddingCounts.push(cp.count); }
       else r.panels.push(applyCladding(pn));
     }
@@ -662,4 +671,24 @@ const METHOD_NAME: Record<string, string> = { print: "3D print", laser: "Laser c
 function swatchFor(key: string) {
   const m = MATERIALS.find((x) => key.startsWith(x.key));
   return m?.colorHex;
+}
+
+/**
+ * Work out which part of a panel's outer face is actually visible: a 1.5 mm slab just outside the face is
+ * intersected with the neighbouring volumes and the covered footprint is removed from the cladding region.
+ */
+function withVisibleFace(wasm: ManifoldToplevel, pn: Panel, comp: ComponentSpec, covers: Manifold[]): Panel {
+  if (!covers.length || !pn.place) return pn;
+  const { origin: o, w } = pn.place;
+  const probe: Panel = { ...pn, thicknessMm: 1.5, place: { ...pn.place, origin: [o[0] + w[0] * pn.thicknessMm, o[1] + w[1] * pn.thicknessMm, o[2] + w[2] * pn.thicknessMm] } };
+  const slab = panelSolid(wasm, probe, comp);
+  if (!slab) return pn;
+  const sb = slab.boundingBox();
+  const near = covers.filter((c) => { const cb = c.boundingBox(); return [0, 1, 2].every((k) => sb.min[k] < cb.max[k] && cb.min[k] < sb.max[k]); });
+  if (!near.length) return pn;
+  const hit = slab.intersect(wasm.Manifold.union(near));
+  if (hit.isEmpty() || hit.volume() < 0.5) return pn;
+  const covered = toLocalSlab(hit, probe.place!, comp).project().offset(0.4, "Miter", 2);
+  const visible = pn.cut.subtract(covered);
+  return { ...pn, visible: visible.area() < 10 ? visible.intersect(wasm.CrossSection.square(0.001).translate([-1e5, -1e5])) : visible };
 }

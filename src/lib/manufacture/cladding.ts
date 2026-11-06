@@ -41,12 +41,18 @@ function rect(wasm: ManifoldToplevel, x0: number, y0: number, x1: number, y1: nu
   return wasm.CrossSection.ofPolygons([[[x0, y0], [x1, y0], [x1, y1], [x0, y1]]]);
 }
 
+/**
+ * @param scale multiplies every course size (exposure, strip height, tile width). 1 = defaults
+ *              (shingle 3.2 mm exposure × 4 mm tiles, clapboard 3 mm, board-and-batten 6 mm boards).
+ */
 export function claddingPieces(
-  wasm: ManifoldToplevel, base: Panel, strip: { materialKey: string; t: number; method: Panel["method"] },
+  wasm: ManifoldToplevel, base: Panel, strip: { materialKey: string; t: number; method: Panel["method"] }, scale = 1,
 ): { base: Panel; strips: Panel[]; count: CladdingCount } | null {
   const kind = base.cladding;
   if (!kind || !PIECE_KINDS.has(kind)) return null;
-  const region = base.cut;
+  // Only the visible part of the face is clad (faces against another volume are skipped).
+  const region = base.visible ?? base.cut;
+  if (region.isEmpty() || region.area() < 10) return null;
   const b = region.bounds();
   const [u0, v0] = b.min, [u1, v1] = b.max;
   const strips: Panel[] = [];
@@ -77,7 +83,7 @@ export function claddingPieces(
   };
 
   if (kind === "boardbatten") {
-    const { e } = SPEC.boardbatten;
+    const e = SPEC.boardbatten.e * scale;
     for (let u = u0, i = 1; u < u1 - 0.5; u += e, i++) {
       const band = region.intersect(rect(wasm, u, v0 - 1, Math.min(u + e - 0.15, u1), v1 + 1));
       for (const piece of band.decompose()) if (piece.area() > 2) { add(piece, i, [0, (piece.bounds().min[1] + piece.bounds().max[1]) / 2], 1.2); units++; }
@@ -90,7 +96,8 @@ export function claddingPieces(
       for (const piece of band.decompose()) if (piece.area() > 1) { add(piece, 100 + i, [0, (piece.bounds().min[1] + piece.bounds().max[1]) / 2], 0.6); }
     }
   } else {
-    const { e, H, W } = SPEC[kind as "clapboard" | "shingle" | "fishscale"];
+    const sp = SPEC[kind as "clapboard" | "shingle" | "fishscale"];
+    const e = sp.e * scale, H = sp.H * scale, W = sp.W * scale;
     for (let v = v0, row = 1; v < v1 - 0.4; v += e, row++) {
       let band = region.intersect(rect(wasm, u0 - 1, v, u1 + 1, Math.min(v + H, v1 + 1)));
       if (band.isEmpty()) continue;
@@ -128,7 +135,7 @@ export function claddingPieces(
     strips,
     count: {
       panelId: base.panelId, partId: base.partId, label: base.label, kind, courses, pieces: strips.length, units,
-      totalLengthMm: Math.round(total), exposureMm: spec.e, stripHeightMm: spec.H, materialKey: strip.materialKey,
+      totalLengthMm: Math.round(total), exposureMm: +(spec.e * scale).toFixed(2), stripHeightMm: +(spec.H * scale).toFixed(2), materialKey: strip.materialKey,
     },
   };
 }

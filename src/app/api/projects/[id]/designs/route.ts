@@ -24,7 +24,7 @@ const Create = z.object({
   name: z.string().optional(),
   controls: z.object({
     detail: z.number().min(0).max(1), difficulty: z.enum(["easy", "medium", "hard"]), targetSizeMm: z.number().positive().nullable(),
-    palette: z.enum(["reference", "bold", "natural", "mono"]), finish: z.enum(["raw", "painted", "oiled", "polished"]), claddingAs: z.enum(["pieces", "engrave"]),
+    palette: z.enum(["reference", "bold", "natural", "mono"]), finish: z.enum(["raw", "painted", "oiled", "polished"]), claddingAs: z.enum(["pieces", "engrave"]), shingleExposureMm: z.number().min(1.5).max(20),
   }).partial().optional(),
 });
 

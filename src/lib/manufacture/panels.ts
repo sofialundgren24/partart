@@ -36,6 +36,8 @@ export interface Panel {
   notes: string[];
   /** Surface pattern engraved on the outer (+w, top-of-sheet) face, added after trimming. */
   cladding?: Cladding;
+  /** Part of the outer face that stays visible (not covered by another part). Defaults to the whole panel. */
+  visible?: CrossSection;
 }
 
 export interface PanelResult {
@@ -600,14 +602,14 @@ function wedgePanels(ctx: PanelContext, part: ResolvedPart, t: number, method: P
     panels.push({
       panelId: id, partId: c.partId, label: `${c.name} — ${name}`, materialKey: part.materialKey, thicknessMm: t, method,
       cut: cs(wasm, [[[0, 0], [d, 0], [0, h]]]), engrave: [], score: [], text: [{ at: [d * 0.25, h * 0.25], text: id, size: 2.5 }],
-      place: { origin: [x, -d / 2, 0], u: [0, 1, 0], v: [0, 0, 1], w: [1, 0, 0] }, notes: [],
+      place: { origin: [x, -d / 2, 0], u: [0, 1, 0], v: [0, 0, 1], w: [1, 0, 0] }, notes: [], cladding: "none",
     });
   }
   const back = pid(c.partId);
   panels.push({
     panelId: back, partId: c.partId, label: `${c.name} — back`, materialKey: part.materialKey, thicknessMm: t, method,
     cut: cs(wasm, [rect(0, 0, w - 2 * t, h)]), engrave: [], score: [], text: [{ at: [(w - 2 * t) / 2, h / 2], text: back, size: 3 }],
-    place: { origin: [-w / 2 + t, -d / 2, 0], u: [1, 0, 0], v: [0, 0, 1], w: [0, 1, 0] }, notes: [],
+    place: { origin: [-w / 2 + t, -d / 2, 0], u: [1, 0, 0], v: [0, 0, 1], w: [0, 1, 0] }, notes: [], cladding: "none",
   });
   const top = pid(c.partId);
   const a = Math.atan2(h, d);
@@ -810,7 +812,7 @@ function placeMatrix(pl: NonNullable<Panel["place"]>): Mat4 {
   return [u[0], u[1], u[2], 0, v[0], v[1], v[2], 0, w[0], w[1], w[2], 0, o[0], o[1], o[2], 1];
 }
 
-function toLocalSlab(m: Manifold, pl: NonNullable<Panel["place"]>, comp: ComponentSpec): Manifold {
+export function toLocalSlab(m: Manifold, pl: NonNullable<Panel["place"]>, comp: ComponentSpec): Manifold {
   let s = m.translate([-comp.position[0], -comp.position[1], -comp.position[2]]);
   const [rx, ry, rz] = comp.rotation;
   if (rz) s = s.rotate([0, 0, -rz]);
@@ -955,7 +957,7 @@ export function claddingLines(kind: Cladding, b: { min: number[]; max: number[] 
 /** Add the panel's cladding pattern as engrave lines, clipped 0.8 mm inside its final outline and holes. */
 export function applyCladding(panel: Panel): Panel {
   if (!panel.cladding || panel.cladding === "none") return panel;
-  const region = panel.cut.offset(-0.8, "Miter", 2).toPolygons().map((q) => q.map((v) => [v[0], v[1]] as Pt));
+  const region = (panel.visible ?? panel.cut).offset(-0.8, "Miter", 2).toPolygons().map((q) => q.map((v) => [v[0], v[1]] as Pt));
   if (!region.length) return panel;
   const { lines, straight } = claddingLines(panel.cladding, panel.cut.bounds() as unknown as { min: number[]; max: number[] });
   return { ...panel, engrave: [...panel.engrave, ...clipLines(lines, region, 0.4, straight)] };

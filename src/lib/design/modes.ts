@@ -12,12 +12,14 @@ export interface DesignControls {
   difficulty: "easy" | "medium" | "hard"; // easy = butt joints / fewer parts
   /** "pieces" = every shingle course / siding board is a separate cut strip; "engrave" = pattern engraved only. */
   claddingAs: "pieces" | "engrave";
+  /** Visible height of one shingle course in mm (other cladding scales with it). Bigger = fewer pieces. */
+  shingleExposureMm: number;
   targetSizeMm: number | null; // overrides project target size for this design
   palette: "reference" | "bold" | "natural" | "mono";
   finish: "raw" | "painted" | "oiled" | "polished";
 }
 
-export const DEFAULT_CONTROLS: DesignControls = { detail: 0.8, difficulty: "medium", targetSizeMm: null, palette: "reference", finish: "raw", claddingAs: "pieces" };
+export const DEFAULT_CONTROLS: DesignControls = { detail: 0.8, difficulty: "medium", targetSizeMm: null, palette: "reference", finish: "raw", claddingAs: "pieces", shingleExposureMm: 3.2 };
 
 export interface ModeDef {
   key: ModeKey;

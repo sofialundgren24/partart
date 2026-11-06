@@ -162,7 +162,7 @@ registerJob("build-kit", async (job, progress) => {
   const kit = await buildKit({
     projectName: project.name, category: project.category, designName: design.name, mode: design.mode,
     components: comps, assignments, printer: JSON.parse(build.printerProfileJson) as PrinterProfile, laser: JSON.parse(build.laserProfileJson) as LaserProfile,
-    region: project.region, finish: controls.finish, difficulty: controls.difficulty, claddingAs: controls.claddingAs,
+    region: project.region, finish: controls.finish, difficulty: controls.difficulty, claddingAs: controls.claddingAs, shingleExposureMm: controls.shingleExposureMm,
     references: await Promise.all(project.images.map(async (i) => ({ fileName: i.fileName, data: await storage.get(i.storagePath) }))),
     meshLoader,
     analysisNotes: findings ? [project.analyses[0].summary, ...(findings.assumptions ?? []), findings.scaleBasis].filter(Boolean) : [],

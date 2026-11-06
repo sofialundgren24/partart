@@ -10,8 +10,10 @@ edges). Shingle strips have slits between tiles and alternate rows are staggered
 clapboard is single boards; board-and-batten gives boards plus battens. Each strip is labelled panel · course ·
 letter in the hidden overlap zone, and the base panel gets an engraved guide line per course.
 Exact counts per surface are in `04_LASER_CUT/CLADDING_COUNTS.md`, the kit page and the catalogue; the assembly guide
-gets a "Shingles and siding" step. Victorian house: 1,831 strips, 10,464 shingles on 10 sheets of 600 × 400 mm.
-Known gap: walls hidden behind a bay or porch roof are still clad (counts include hidden areas).
+gets a "Shingles and siding" step. Faces covered by another part (a wall against a wing, behind a bay or turret, the porch roof's vertical ends) are
+detected in 3D and get no cladding. Shingle size is a design control (default 3.2 mm visible per course, siding scales
+with it). Victorian house (mixed): 1,794 strips / 8,962 shingles at 3.2 mm; 861 strips / 2,594 shingles at 6 mm.
+Hand check: main roof slope ≈ 120 mm / 3.2 mm = 38 courses × 190 mm / 4 mm = 47 tiles ≈ 1,790; computed 1,756.
 
 ## Session 2 — from cubes to buildings
 
