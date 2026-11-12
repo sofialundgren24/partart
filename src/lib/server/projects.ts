@@ -224,12 +224,15 @@ export async function startBuild(projectId: string, designId: string, printer?: 
   return { build, job };
 }
 
-export async function proxyGlb(projectId: string): Promise<Buffer> {
+/** Proxy model as GLB. `preview` adds proposed (not yet accepted) parts, drawn in a highlight colour. */
+const PREVIEW_HEX = "#ff3d8b";
+
+export async function proxyGlb(projectId: string, preview: ComponentSpec[] = []): Promise<Buffer> {
   const wasm = await getManifold();
-  const comps = await projectSpecs(projectId);
+  const comps = [...await projectSpecs(projectId), ...preview.map((c) => ({ ...c, colorHex: PREVIEW_HEX }))];
   const nodes = comps.map((c) => ({
     name: c.partId, mesh: toMeshData(componentSolid(wasm, c, meshLoader, 40)), colorHex: c.colorHex,
-    opacity: c.role === "opening" ? 0.6 : 1,
+    opacity: c.colorHex === PREVIEW_HEX ? 0.9 : c.role === "opening" ? 0.6 : 1,
     extras: { partId: c.partId, name: c.name, role: c.role, provenance: c.provenance, confidence: c.confidence },
   }));
   return writeGlb(nodes, "proxy");

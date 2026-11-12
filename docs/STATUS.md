@@ -1,6 +1,21 @@
 # PARTART — Build status
 
-_Last updated 2026-11-06 (session 2: architecture)._
+_Last updated 2026-11-10 (session 4: hidden-side rules)._
+
+See `docs/ROADMAP.md` for the plan to own the photo → components step without depending on AI.
+
+## Session 4 — hidden sides by rule, not by AI
+
+`src/lib/analysis/inference.ts` proposes the walls a front photo cannot show, with PARTART's own deterministic rules:
+mirror a populated face onto its unseen opposite (windows, gable fans), continue window rows onto blank walls (size and
+floor heights measured from the visible windows; a windowless main body borrows them from the rest of the house at
+lower confidence), and a back door opposite a single front door. Every candidate is checked with exact point-in-solid
+tests: it must lie on a real face (under a gable's slopes, ≥ 5 mm from the corner joints) and must not be hidden inside
+another volume; nothing is added on the photographed front. The Analyze page shows each suggestion with its rule,
+evidence and confidence; tick to preview it in pink in 3D, then accept (parts are added as *inferred*, with a note naming
+the rule) or reject (remembered per project). Victorian template: 4 suggestions, 15 parts; two candidate window
+columns behind the corner turret are refused with that reason. Accepted openings are cut into the walls of a real kit
+(tested). Also fixed: the simple house template's back windows faced into the wall (rotation 0 → 180).
 
 ## Session 3 — shingles and siding as countable cut pieces
 
@@ -93,7 +108,7 @@ Validation is geometric and fit-based; it is **not** structural engineering.
 
 ## Tests
 
-`npm test` — 22 tests, all passing; `next build` succeeds:
+`npm test` — 30 tests, all passing (incl. 7 for hidden-side inference); `next build` succeeds:
 - Victorian house through woodwork / mixed / realistic / papercraft (no geometry failures, catalogue present);
 - rotation convention matches manifold-3d;
 - STL/OBJ/GLB round-trips (watertight, sizes in mm), 3MF structure and units, box → 6 jointed panels, kerf offset = kerf/2 per side, nesting + SVG/DXF layers;

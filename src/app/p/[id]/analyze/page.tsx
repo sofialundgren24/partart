@@ -7,6 +7,7 @@ import { api, useJob } from "@/lib/client/api";
 import { JobProgress, ProvenanceChip, SectionTitle, Empty } from "@/components/ui";
 import { Viewer } from "@/components/viewer";
 import { AddComponent, ComponentInspector, ComponentTree } from "@/components/ComponentEditor";
+import { HiddenSidesPanel } from "@/components/HiddenSides";
 
 interface Findings {
   objectName: string; observed: string[]; inferred: string[]; assumptions: string[];
@@ -29,6 +30,7 @@ export default function AnalyzePage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [colorMode, setColorMode] = useState<"model" | "confidence" | "provenance">("model");
   const [target, setTarget] = useState<string>("");
+  const [preview, setPreview] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const analysis = project?.analyses[0];
@@ -101,6 +103,7 @@ export default function AnalyzePage() {
                 }}>Re-analyse</button>
               </div>
             </div>
+            {project.category === "architecture" && <HiddenSidesPanel projectId={project.id} version={version} preview={preview} onPreview={setPreview} onChanged={changed} />}
             {findings && <FindingsPanel f={findings} summary={analysis!.summary} />}
           </aside>
 
@@ -114,7 +117,7 @@ export default function AnalyzePage() {
               {colorMode === "confidence" && <span className="text-xs text-ink-soft">red = low · green = high (reconstruction uncertainty)</span>}
               {colorMode === "provenance" && <span className="flex gap-1">{["observed", "inferred", "assumed", "template", "user", "imported"].map((p) => <ProvenanceChip key={p} p={p} />)}</span>}
             </div>
-            <Viewer url={`/api/projects/${project.id}/model?v=${version}`} selected={selected} onSelect={setSelected} colors={colors} height={560} />
+            <Viewer url={`/api/projects/${project.id}/model?v=${version}${preview.length ? `&preview=${encodeURIComponent(preview.join(","))}` : ""}`} selected={selected} onSelect={setSelected} colors={colors} height={560} />
             <p className="mt-2 text-xs text-ink-soft">
               {project.reconstructions[0]?.kind === "imported" ? "Imported 3D model." : "Primitive proxy reconstruction — a structured approximation for planning, not a scan and not yet validated for manufacturing."}
             </p>

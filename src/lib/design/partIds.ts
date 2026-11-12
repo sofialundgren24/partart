@@ -1,6 +1,7 @@
 const CODES: Record<string, string> = {
   base: "BASE", structure: "STRUCT", shell: "BODY", roof: "ROOF", opening: "WIN", detail: "DET", joint: "JOINT",
   wheel: "WHEEL", axle: "AXLE", head: "HEAD", torso: "TORSO", limb: "LIMB", hand: "HAND", foot: "FOOT", accessory: "ACC", imported: "SCAN",
+  ornament: "ORN", column: "POST", railing: "RAIL", stairs: "STAIR", chimney: "CHIM",
 };
 
 export function nextPartId(existing: string[], role: string): string {

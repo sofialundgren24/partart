@@ -35,8 +35,8 @@ function house(): T[] {
     out.push(c(`C-WIN-${String(i).padStart(2, "0")}`, `Window ${i}`, "opening", "C-BODY-01", { type: "box", w: 28, d: 3, h: 36 }, [x, y, z], "#a9d1e0", [0, 0, rz]));
   win(1, -58, -D / 2, B + 52);
   win(2, 58, -D / 2, B + 52);
-  win(3, -58, D / 2, B + 52);
-  win(4, 58, D / 2, B + 52);
+  win(3, -58, D / 2, B + 52, 180);
+  win(4, 58, D / 2, B + 52, 180);
   win(5, -W / 2, 0, B + 52, -90);
   win(6, W / 2, 0, B + 52, 90);
   return out;

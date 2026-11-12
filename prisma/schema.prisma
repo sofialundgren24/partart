@@ -35,6 +35,8 @@ model Project {
   // Real-world size of the reference object if known (mm, largest dimension).
   realSizeMm      Float?
   region          String   @default("SE")
+  // Hidden-side suggestions (rule ids) the user rejected, so they are not offered again. JSON string array.
+  dismissedSuggestions String @default("[]")
   status          String   @default("new") // new | analyzing | analyzed | designing | building | ready | failed
   activeDesignId  String?
   createdAt       DateTime @default(now())
